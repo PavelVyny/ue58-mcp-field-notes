@@ -5,10 +5,82 @@ See the [README](README.md) for what the markers mean.
 
 ## Contents
 
+- [ObjectTools](#objecttools)
 - [ProgrammaticToolset](#programmatictoolset)
 - [SequencerTools](#sequencertools)
 - [MaterialTools](#materialtools)
 - [PhysicsAssetToolset](#physicsassettoolset)
+
+---
+
+## ObjectTools
+
+### A failed `set_properties` still wipes the properties it touched
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+I asked for `{skeleton, sampleData}` on a BlendSpace. `skeleton` is not editable, so the call
+failed - and took `sampleData` with it. The asset came back with `skeleton: None` and
+`sampleData: []`. Both fields I had asked about were now empty.
+
+So the call is not atomic and it does not roll back. A rejected write is not a no-op; it is a
+partial write you did not ask for.
+
+**Workaround.** Probe unknown properties on a duplicate, never on the asset you care about.
+If the duplicate comes back gutted, you have lost nothing.
+
+### `set_properties` never fires `PostEditChangeProperty`
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes (manual)
+
+The value changes and the asset goes dirty, so every check you can make through MCP says the
+edit landed. What does not happen is the notification: systems that rebuild on
+`PostEditChangeProperty` - preview meshes, generated thumbnails, anything listening on a
+change delegate - never hear about it and keep serving stale state.
+
+This is the known UE rule that a direct property write must be followed by an explicit
+notify. The difference here is that you cannot do the explicit part: the toolset gives you no
+way to construct the event.
+
+**Workaround.** Touch the field once in the Details panel, or trigger the owning system's
+rebuild by hand. If a commandlet consumes the asset afterwards, save it to disk first - a
+separate process does not see in-memory edits and does not inherit console variables.
+
+### An empty result is indistinguishable from "wrong context"
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`[]` and `""` mean both "there is nothing here" and "the object is not loaded, or you are
+asking in the wrong context". The API does not separate them, so an agent reads a clean empty
+answer and concludes the collection is empty.
+
+**Workaround.** Verify emptiness a second way before believing it. This is the single
+cheapest habit on this page and the one that saves the most time.
+
+### Delta serialization swallows a child CDO override equal to the parent value
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Write a value onto a child Blueprint's CDO that happens to equal the parent's, and the call
+reports success - but no delta is stored, because there is no difference to store. Change the
+parent later, or update the plugin the parent lives in, and the child silently follows the new
+parent value. The override you thought you set was never there.
+
+The mirror image bites too: per-instance overrides on placed actors shadow CDO edits entirely.
+Instances that were placed months ago keep their captured values and never see the new default.
+
+**Workaround.** Assign the override while the parent holds a different value, and re-read after
+any parent change. For stale placed actors, `reset_properties` on the single property returns
+that instance to inheritance without touching the rest.
+
+### Not every UPROPERTY is reachable through reflection
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes (manual)
+
+`bEnableStreaming` on World Partition, for one: visible in the UI, not readable through
+reflection. Absence from the reflection surface does not mean absence from the object.
+
+**Workaround.** Change it in the editor UI and move on. Not everything is worth automating.
 
 ---
 
