@@ -5,11 +5,115 @@ See the [README](README.md) for what the markers mean.
 
 ## Contents
 
+- [EditorAppToolset](#editorapptoolset)
 - [ObjectTools](#objecttools)
 - [ProgrammaticToolset](#programmatictoolset)
 - [SequencerTools](#sequencertools)
 - [MaterialTools](#materialtools)
 - [PhysicsAssetToolset](#physicsassettoolset)
+
+---
+
+## EditorAppToolset
+
+### `CaptureViewport` ignores `captureTransform`, and the frame is not your viewport either
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** none (ask a human)
+
+This one took three rounds to understand, so here is the whole arc.
+
+First it looked like a stale frame: captures lagged the real viewport by several edits. The
+obvious fix was to wake the viewport up - `SetCameraTransform` to the same pose, then capture.
+That seemed to help, so it went in the notes as the rule.
+
+It did not help. Next came `captureTransform`, the argument that renders from a given pose
+without moving the viewport - clean, no nudging. That went in the notes too.
+
+Then I ran three captures with three different `translation` values and got three identical
+images, of a part of the level neither I nor the argument had asked for.
+
+So: the tool returns its own fixed view. Not the active viewport, not the pose you passed.
+Every explanation before this one was me fitting a story to a coincidence.
+
+**Workaround.** None inside the toolset. For visual verification, ask the human at the keyboard
+for a screenshot. `GetCameraTransform` is fine - it reports the real camera correctly, so you
+can still reason about where things are. You just cannot see them.
+
+### Optional arguments that are not optional
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`CaptureViewport` marks `captureTransform` and `annotations` as `TOptional`. Omit either and
+the call fails with `input param X needs a default value`. Both are mandatory in practice.
+
+`StartPIE` is the same shape: it wants the full `options` block - `bSimulate`, `playMode`,
+`warmupSeconds` - and `playMode` is required even when `bSimulate` already says what you mean.
+
+Disabled annotations are not an omission, they are a block of zeros plus
+`classFilter: {"refPath": ""}`.
+
+**Workaround.** Treat `TOptional` in this API as documentation of intent, not of behaviour.
+Pass everything.
+
+### `CaptureViewport` returns ~2.8 MB and the payload lands in a file
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The base64 image does not come back inline - it spills into a `tool-results` file, and the
+client has to go read it. Worth knowing before you plan a loop around it.
+
+The structure is `returnValue.image.data`, not `returnValue.data`. Sibling tools differ here:
+the Slate inspector's screenshot puts its payload directly at `returnValue.data`. Same idea,
+different shape, no warning.
+
+**Workaround.** Parse the file, decode `returnValue.image.data`, write a `.png`, read that.
+
+### `GetCameraTransform` only tells the truth while the camera is locked
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Without `set_camera_lock(true)` it reports the free viewport, not the sequence camera - and
+because the viewport eases into position, two reads a second apart give different numbers.
+The symptom reads as "my keys are in the wrong place", which sends you to fix the keys.
+
+`close_sequence` and `open_sequence` both drop the lock.
+
+**Workaround.** To verify keys by pose: lock → `set_playhead_frame` → `force_evaluate` →
+`GetCameraTransform`.
+
+### There is no console-command tool
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`EditorAppToolset` can search console variables. It cannot set one, and there is no
+`ExecuteConsoleCommand` anywhere in the surface. For a system built to automate the editor,
+the absence is louder than most bugs on this page.
+
+**Workaround.** Type into the editor's status-bar command box through the Slate inspector:
+`Type {ref, text, submit: true}`. Find the ref with `Observe("")` then `Snapshot` on the status
+bar menu - it is the textbox next to "Cmd". It works while PIE is running, too.
+
+### Every `ProfileGPU` leaves a GPU Visualizer window open, and the next profile pays for it
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The window is never closed. They stack up, they redraw every frame, and the editor starts
+crawling - which reads as "profiling made my editor slow" rather than "I have six windows
+open". Worse, an unclosed visualizer adds roughly 2000 draw calls to the frame you profile
+next, so the numbers you are collecting are wrong in a way that looks plausible.
+
+**Workaround.** Close it through the Slate inspector - `Windows {action: "close", index}` -
+before every subsequent measurement.
+
+### `stat unit` typed from the status bar does not draw over PIE
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The command goes through, the overlay never appears, and the screenshot comes back empty.
+
+**Workaround.** Use `ProfileGPU` instead: it writes a full pass breakdown into the Output Log,
+which you can read with the log toolset and a pattern filter. Slower to read, but it is text,
+and text is what an agent can actually use.
 
 ---
 
