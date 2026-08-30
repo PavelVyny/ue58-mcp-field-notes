@@ -9,6 +9,7 @@ See the [README](README.md) for what the markers mean.
 - [ObjectTools](#objecttools)
 - [ProgrammaticToolset](#programmatictoolset)
 - [SequencerTools](#sequencertools)
+- [PCGToolset](#pcgtoolset)
 - [MaterialTools](#materialtools)
 - [PhysicsAssetToolset](#physicsassettoolset)
 
@@ -329,6 +330,122 @@ frame is never shown through the camera.
 
 **Workaround.** After a rate change, stop trusting your notes: read the channel with `get_keys`,
 clear it, and write again from the new numbers.
+
+---
+
+## PCGToolset
+
+### ☠️ `GetNodeDataView` hangs the editor, and graph size is what decides it
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** none
+
+The tool turns on graph-level data inspection. From then on every generation retains the data
+of every node - hundreds of thousands of points across dozens of nodes, gigabytes of it - and
+the editor runs out of memory. Two calls in parallel freeze it outright.
+
+I first wrote this down as "only use it on a small test volume". That was wrong. On a graph of
+about seventy nodes, a second call right after a generation froze the editor hard enough to
+need a kill - **on a 40 × 40 m volume**. The volume is not what costs you. The graph is.
+
+Inspection does not turn back off. Only a restart clears it.
+
+**Workaround.** Do not use it on a production graph at all. Debug through the PCG log with a
+pattern filter, and with your eyes.
+
+### The toolset is not called what the catalogue says
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Its full name is `PCGToolset.PCGToolset`, and the spatial one is `PCGToolset.PCGSpatialToolset`.
+Call either by the short name and you get "Toolset not found", which reads like the plugin is
+missing rather than like a naming quirk.
+
+### `ListNativeNodes` hides plugin nodes, `bCommonOnly: false` or not
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The flag defaults to true, so the first listing is short. Setting it false makes the list longer -
+and still without any node a plugin contributed. Those nodes exist, they are just not
+discoverable through the tool that exists to discover nodes.
+
+**Workaround.** Find their classes by reflection (`search_subclasses` on the PCG settings base),
+and build with the plugin's own primitive subgraphs through `AddSubgraphNode` rather than with
+native nodes.
+
+### Adding a native node is `AddNode`, and all six arguments are required
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+There is no `AddNativeNode` - that name returns "Unknown tool". The real one is `AddNode`, and it
+wants `graph`, `nativeNodeType`, `nodeName`, `jsonParams`, `nodeTitle`, `nodeComment`, every one
+of them, every time. `nativeNodeType` is the display string from `ListNativeNodes`, spaces
+included: `"Spatial Noise"`, `"Density Filter"`, `"Get Spline Data"`.
+
+### `UpdateNode` demands `nodeTitle` even when you are only changing parameters
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Leave it out and the call fails; pass `""` and the existing title is kept. So the argument is
+required in order to be ignored.
+
+Inside a batch script this is not a small annoyance - the failure rolls back every mutation the
+script has already made.
+
+### `subGraphForNode` needs the object path with the name twice
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`/Plugin/Primitives/Filter/Filter_Foo` is what `find_assets` gives you, and
+`AddSubgraphNode` rejects it: "is not a valid object path for property 'SubGraphForNode'". It
+wants `/Plugin/Primitives/Filter/Filter_Foo.Filter_Foo`.
+
+This is the standard UE object-path convention rather than a bug, but it catches everyone,
+because the tool that hands you the path hands you the form the next tool refuses.
+
+### `ConnectNodePins` silently inserts conversion nodes
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Connect two nodes whose data types do not line up and the tool inserts converters between them -
+`FilterDataByType` and friends - without telling you. Your graph now has nodes you did not add,
+and there is no direct edge between the two nodes you "connected", so a later
+`DisconnectNodePins` fails.
+
+The return value is the list of inserted nodes; an empty array means nothing was inserted. That
+is the only notice you get.
+
+**Workaround.** Before rewiring anything, read the actual edges from `GetGraphStructure` instead
+of assuming your own connection exists.
+
+### `paramOverrides` only holds non-default values, and that is success, not loss
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Set a parameter to a value equal to its default and its key disappears from `paramOverrides`.
+Nothing was lost - there is simply no override to record.
+
+The trap is on the read side: a node with `mode: Perlin2D` shows no `mode` key at all, because
+Perlin2D is the default. "The parameter is not set" and "the parameter is set to its default" look
+identical in a dump.
+
+**Workaround.** Read the schema with `GetNativeNodeSchema` when you need to know what a missing
+key means. And guard every lookup - the dictionaries here raise on a missing key rather than
+returning a default, and inside a script that raise costs you the whole run.
+
+### "Failed to call Execute" means busy, not broken
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`ExecuteGraphInstance` refuses while the previous generation is still running, and the message
+does not say so. Same message when the editor is still warming up after launch.
+
+I originally wrote this down as an idle timeout in the client and concluded that generation had
+to be triggered by hand. That was wrong too: twenty-five consecutive runs on a full-map graph
+went through the tool without a single timeout. The condition is simply a pause of around fifty
+seconds between runs. The fully autonomous loop - edit the graph, execute, look at the result -
+does work.
+
+**Workaround.** Wait and retry rather than debugging the graph.
 
 ---
 
