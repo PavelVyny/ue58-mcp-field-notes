@@ -258,6 +258,78 @@ or ask. It replaces. The old sequence - tracks, keys, bindings - is gone.
 **Workaround.** `find_assets` on the target path before every create. Treat the call as
 destructive, because it is.
 
+### A new property-track section is created with a `0..0` range, so the keys never evaluate
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`add_section` gives you a section whose range is zero-length. Keys written into it are accepted,
+`get_keys` lists them all back, and the property holds its original value on every frame except
+frame 0.
+
+The symptom is "the animation on this property does nothing", which sends you looking at the
+keys - and the keys are fine.
+
+**Workaround.** `set_section_range(0, end)` immediately after every `add_section`. This is the
+narrow, creation-time case of the wider rule that section ranges are independent of the
+sequence playback range - see
+[ue5-mcp §5.15](https://github.com/ibrews/ue5-mcp) for the general version.
+
+### Property tracks silently ignore nested struct fields
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`set_property_name_and_path` with a path into a struct - `Filmback.SensorWidth` - creates the
+track, accepts the keys, and never applies the value. No error anywhere in the chain.
+
+Flat properties work (`CurrentFocalLength`, `bConstrainAspectRatio`), and so do paths the engine
+itself registers (`FocusSettings.ManualFocusDistance`). Arbitrary struct paths do not.
+
+**Workaround.** Set whole structs through `set_properties` on the spawnable instance instead of
+animating them. If you need the struct field to change over time, find the engine-registered
+path for it or animate something else.
+
+### `create_camera` already made the property tracks, and a second one averages the values
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`create_camera` quietly creates the standard property tracks on the child CameraComponent
+binding - Current Focal Length, Manual Focus Distance, Current Aperture - with empty sections.
+Add your own track for the same property and the engine blends two sources: the value you get
+is the arithmetic mean of your keys and the original.
+
+I asked for a focus distance of 131 cm and got 50065. That number makes no sense until you know
+there are two tracks.
+
+**Workaround.** `get_tracks_on_binding` plus `get_track_display_name` to find what is already
+there, write into the existing track, and `remove_track` on any duplicate you created.
+
+### Unbounded sections are normal, and asking about their range throws
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The transform section from `create_camera` and every spawn section are created without bounds.
+That is correct - you can write keys outside a range that does not exist. But
+`get_section_range` and `get_section_properties` on such a section raise "Section does not have
+a start frame", and inside a batch script that single raise rolls back everything the script has
+done.
+
+**Workaround.** Do not call range queries on sections you did not explicitly bound. `try` does
+not help here - the error comes from the tool layer, not from your script.
+
+### Changing display rate renumbers every existing key
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Switch a sequence from 30 to 120 fps and frame 60 becomes frame 240. Absolute time is preserved,
+which is the point - but every frame number you wrote down is now wrong, and code that reasons
+about "the key at frame 60" quietly targets a quarter of the way through.
+
+Related: the Camera Cuts section is half-open. Its end has to sit at `last_key + 1`, or the final
+frame is never shown through the camera.
+
+**Workaround.** After a rate change, stop trusting your notes: read the channel with `get_keys`,
+clear it, and write again from the new numbers.
+
 ---
 
 ## MaterialTools
