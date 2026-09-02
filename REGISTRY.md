@@ -5,6 +5,7 @@ See the [README](README.md) for what the markers mean.
 
 ## Contents
 
+- [Arguments, names and paths](#arguments-names-and-paths)
 - [EditorAppToolset](#editorapptoolset)
 - [ObjectTools](#objecttools)
 - [ProgrammaticToolset](#programmatictoolset)
@@ -12,6 +13,73 @@ See the [README](README.md) for what the markers mean.
 - [PCGToolset](#pcgtoolset)
 - [MaterialTools](#materialtools)
 - [PhysicsAssetToolset](#physicsassettoolset)
+
+---
+
+## Arguments, names and paths
+
+Naming across this API is not consistent, and the inconsistencies are not documented. This
+section is about the tools' own surface - argument names, return shapes, truncation - rather than
+about UE's object-path conventions in general, which
+[ue5-mcp §4](https://github.com/ibrews/ue5-mcp) already covers well.
+
+### Argument names diverge between toolsets, and inside one toolset
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Caught in practice, all of them by having the call fail:
+
+- `AssetTools.delete` wants `path`. Not `asset_path`.
+- `SkeletalMeshTools.set_socket_transform` wants `transform`, while `ActorTools` uses `xform`
+  for the same idea.
+- Inside `MaterialInstanceTools`: `list_parameters` takes `material`, and
+  `get_texture_parameter` takes `instance` plus `name`. Same toolset, same kind of object, two
+  different words for it.
+- `AssetTools.list_folders` takes `root_path` - and its own docstring says otherwise.
+- `save_assets` takes plain path strings without the `.Asset` suffix, not `{refPath}` objects,
+  and there is no `assets` argument at all.
+
+**Workaround.** Let the validation error tell you the schema - that is the intended way to
+discover it. But do that outside a batch script: in a script a wrong argument name rolls back
+everything the script has already done, so the cheap self-correction becomes an expensive one.
+
+### `find_actors` truncates at 20 without saying so
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Ask broadly and you get twenty results and no indication that there were more. `find_assets`
+appears to do the same on wide queries.
+
+**Workaround.** Treat exactly twenty results the way you would treat zero: as a number that means
+"ask again, differently".
+
+### Actor tools only see loaded World Partition cells
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Everything that enumerates actors sees the streamed-in part of the world only. On a partitioned
+map this is a moving target - the same query gives different answers depending on where the
+editor camera was.
+
+**Workaround.** Load the region you intend to query first, and never conclude "the actor does not
+exist" from an actor query alone.
+
+### Verify an asset path before a script uses it
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+A wrong `refPath` is not the harmless "object not found" it looks like. It is the first step of
+the chain that kills the editor - see
+[the ProgrammaticToolset entry](#a-script-error-kills-the-editor-outright-when-the-edited-asset-is-open-in-its-own-window).
+
+The log names it clearly once you know what to look for: `Failed to find object` → `is not valid
+Object for property` → `Undo Execute tool script` → `appError`.
+
+**Workaround.** `find_assets` first. Every time, including the paths you are sure about - the one
+that got me was a typo in a path I had typed twenty times.
+
+Subfolders are their own trap: plugin content does not always live where its category suggests,
+and the file you want may sit one level up from the folder named after its feature.
 
 ---
 
@@ -232,6 +300,27 @@ disappear because the next call used an argument that does not exist.
 
 **Workaround.** Validate argument names before batching. A single wrong name costs the whole
 run, not just its own step - and if the asset is open in its editor, see the entry above.
+
+### Subobject paths containing a space work in direct calls and break inside scripts
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+A component named with a space in it - `My Component` - resolves fine through a direct
+`call_tool`. Put the same path inside a batch script and `get_properties` returns `None` or
+throws.
+
+**Workaround.** Handle those objects with direct calls and keep them out of batches. Or rename
+the component, if it is yours.
+
+### The dictionaries are `_StrictDict`: `.get(key, default)` raises
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Script-side dictionaries look like Python dicts until you call `.get()` with a fallback, which
+raises `TypeError: does not support a default value`. The defensive pattern everyone writes by
+reflex is the one that breaks - and it breaks the whole script, undoing everything before it.
+
+**Workaround.** `if key in d: d[key]`. Never `.get`.
 
 ### `get_properties` with a property the node's class does not have kills the entire script
 
