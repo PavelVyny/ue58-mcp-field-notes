@@ -12,7 +12,9 @@ See the [README](README.md) for what the markers mean.
 - [SequencerTools](#sequencertools)
 - [PCGToolset](#pcgtoolset)
 - [MaterialTools](#materialtools)
+- [Animation and meshes](#animation-and-meshes)
 - [PhysicsAssetToolset](#physicsassettoolset)
+- [Plugins, search and odds](#plugins-search-and-odds)
 
 ---
 
@@ -556,6 +558,70 @@ The neighbouring `delete_unused_expressions` deserves the same caution. It remov
 not connected to a material output - which includes the author's legacy nodes, parked
 deliberately and still wanted. It reads like tidying. It is data loss.
 
+### A named reroute cannot be traced back to its declaration
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`NamedRerouteUsage` exposes neither `Declaration` nor `DeclarationGuid` to reflection - listing
+its properties gives you editor coordinates and a description, nothing else. So when you walk
+somebody else's material graph and hit a named reroute, the chain simply ends there.
+
+**Workaround.** Infer the name from context. There is no programmatic route, so plan graph
+traversal knowing it has holes.
+
+---
+
+## Animation and meshes
+
+### An AnimBlueprint or BlendSpace cannot be pointed at a different skeleton
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes (manual)
+
+`BlendSpace.skeleton` is read-only to reflection. On an AnimBlueprint it is worse: asking for the
+asset's properties gives you the CDO of the AnimInstance, so `TargetSkeleton` is not merely
+unwritable, it is not visible. And `BlueprintTools.create` goes through the plain Blueprint
+factory, which has no notion of a skeleton at all.
+
+`AssetTools.duplicate` copies everything correctly, including skeleton and samples - but a
+duplicate points at the same skeleton it came from, which is the one thing you were trying to
+change.
+
+**Workaround.** Create the asset by hand in the editor, on the right skeleton. That single act is
+all that needs a human.
+
+### What does work on those assets, once they exist
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** n/a
+
+Worth stating, because the entry above reads more hopeless than it is:
+
+- `set_parent` works on an AnimBlueprint. Reparenting a freshly created ABP onto a custom
+  AnimInstance base went through normally - reparent, compile, verify with `get_parent`.
+- `blendParameters` writes fine on a BlendSpace, including as a struct array, without losing
+  `sampleData` or `skeleton`.
+
+So the only things a human has to do are creating the asset on the right skeleton and authoring
+the AnimGraph. Everything else can be driven.
+
+### Renaming a blend space axis does not need a grid rebuild
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** n/a
+
+As long as `min`, `max` and `gridNum` stay put, editing `blendParameters` is safe: the baked grid
+samples store sample indices and weights, not positions. Renaming an axis or swapping which
+animation a sample points at leaves the grid valid.
+
+### `add_socket` creates a mesh socket, not a skeleton socket
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The second argument of the underlying call is `bAddSocketToSkeleton`, and it is false. So the
+socket exists on that one mesh, and sibling meshes sharing the skeleton never see it. Verified
+the unhappy way: a socket added to one variant of a character was simply absent on the other.
+
+This is convenient when you want a targeted change that does not touch a purchased pack - and
+surprising if you expected sockets to live where the editor's own UI suggests they live.
+
 ---
 
 ## PhysicsAssetToolset
@@ -584,3 +650,70 @@ Rule of thumb that held up across two characters: **the rotation is roughly equa
 limit itself**. With `Swing1 Limited 65`, a yaw around 60 puts the straight leg at the edge
 of the bend window, and the joint folds one way only. If you have a tuned donor asset, copy
 its Rotation values directly - unlike Position, they do not depend on the mesh proportions.
+
+### Do not compare constraint motions by their first letter
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`Locked` and `Limited` both start with `L`. Shorten them while diffing two assets and every joint
+matches, including the ones that do not. I verified a port this way once and declared it clean
+when it was not.
+
+**Workaround.** Compare full strings. It is a stupid rule and it costs nothing.
+
+---
+
+## Plugins, search and odds
+
+### `SetPluginEnabled` does not persist
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+It returns null, the plugin appears enabled, and after a restart it is disabled again. Nothing
+was written to the `.uproject`.
+
+**Workaround.** Edit the `.uproject` yourself and restart the editor.
+
+### The semantic search toolset ships non-functional
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`SemanticSearchToolset` is wired to OpenAI - captions and embeddings both. With no key it answers
+401, and the search index on disk is empty, so the toolset that looks like the answer to "find me
+the thing" is the one tool guaranteed not to work out of the box. Making it work costs money at a
+third party.
+
+**Workaround.** `find_assets`, gameplay tags, and plain text search over the project. They are
+enough more often than you would expect.
+
+### `StaticMeshTools` has no `get_mesh_info`
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The obvious call does not exist. What exists: `get_lod_count`, `get_triangle_count(mesh, lod)`,
+`get_lod_thresholds`, `get_material_slots`, `get_material`, `is_nanite_enabled`,
+`set_nanite_enabled`. The mesh argument is `mesh`, not `static_mesh`, and `minLOD` is not readable
+through reflection at all.
+
+Instance count on an instanced static mesh is the length of its per-instance data array - there is
+no counter to ask for.
+
+### `GetQueryDescription` reports "Empty" for editable World Conditions
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+It only describes a compiled shared definition. Point it at conditions that are still editable and
+it says the query is empty - which is indistinguishable from an actually empty query.
+
+### Client-side: agent permission classifiers block Slate clicks and PIE
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Not an engine issue - this one is on the client. Automated approval refuses Slate clicks and
+`StartPIE`, so a run that should be autonomous stops. With explicit human approval both work
+exactly as documented: a click on a button reports true, and simulate mode brings a PIE world up
+in about seven seconds.
+
+**Workaround.** Ask for approval up front for the interactive parts, rather than discovering the
+refusal in the middle of a sequence. And note that interactive tools take over the human's editor
+while they run - always worth announcing before you do it.
