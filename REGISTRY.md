@@ -542,6 +542,20 @@ does work.
 
 ## MaterialTools
 
+### `get_expression_inputs` reports the wrong `output_name` on multi-output nodes
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+When the source node has several outputs - a break-attributes node, for instance - every
+connection comes back naming the same output. In my case all of them claimed to come from
+"Specular". The `input_name` side is correct; it is only the output that lies.
+
+Which means you cannot reconstruct a graph's topology from this call alone, and if you do, the
+result looks coherent and is wrong.
+
+**Workaround.** Cross-check with the node's real output names before believing any edge that
+starts at a multi-output node.
+
 ### `layout_expressions` re-lays out the entire graph, not the part you touched
 
 **Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
