@@ -15,6 +15,7 @@ See the [README](README.md) for what the markers mean.
 - [Animation and meshes](#animation-and-meshes)
 - [PhysicsAssetToolset](#physicsassettoolset)
 - [Plugins, search and odds](#plugins-search-and-odds)
+- [Blueprint graphs and editor Python](#blueprint-graphs-and-editor-python)
 
 ---
 
@@ -731,3 +732,128 @@ in about seven seconds.
 **Workaround.** Ask for approval up front for the interactive parts, rather than discovering the
 refusal in the middle of a sequence. And note that interactive tools take over the human's editor
 while they run - always worth announcing before you do it.
+
+---
+
+## Blueprint graphs and editor Python
+
+Everything here was hit while moving a dialogue system from a spec into a running game: adding a
+component to a Blueprint from script, replacing an event graph, and importing text assets from
+JSON. The tools work, but several of them fail in ways that point at the wrong cause.
+
+### Boolean property names drop the `b` prefix in editor Python
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+A `bool` UPROPERTY declared as `bIsPlayer` is reachable from Python as `is_player`, not as
+`b_is_player`. The symptom misleads: the error reads `Failed to find property 'b_is_player' for
+attribute 'b_is_player'`, repeating your own wrong name back at you, so it looks as if the
+property is missing from the struct entirely.
+
+**Workaround.** Strip the Hungarian `b` before converting to snake_case. Every other property
+converts the way you would expect.
+
+### `set_properties` takes `values`, `get_properties` takes `properties`
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Two neighbouring tools in the same toolset disagree about the name of the argument that carries
+the property payload. The schema comes back in the error text, so a direct call self-corrects in
+one round trip - but inside a batching script the failed call rolls the whole script back, and
+everything it had already done is undone with it.
+
+**Workaround.** Validate argument names with a single direct call before putting a tool into a
+batch.
+
+### `list_properties` returns a JSON string, not a list
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The return value is a string containing a JSON object. `len()` on it gives the character count -
+9325 for a widget - which reads like a plausible property count, and filtering it as if it were a
+list silently finds nothing. Property names inside are camelCase, including odd ones such as
+`nPC_Id` for `NPC_ID`.
+
+**Workaround.** Parse it before using it, and print a couple of keys the first time you touch an
+unfamiliar object.
+
+### `write_graph_dsl` compiles the Blueprint before it writes
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Which means you cannot use it to repair a graph that does not currently compile: to replace the
+broken graph you must first make it compile. The failure surfaces as a compile error listing
+problems in the graph you were about to delete.
+
+**Workaround.** `find_nodes` with an empty `title` returns every node in a graph, and
+`delete_node` works without a successful compile. Delete first, then write.
+
+### The graph DSL reader and writer are not symmetric
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** partial
+
+`read_graph_dsl` emits node names the writer cannot construct. Reading a getter for a public bool
+member produced `|GetbIsHostile`; feeding that straight back gives `The node could not be created`.
+So a graph copied out of one Blueprint is not guaranteed to write into another.
+
+**Workaround.** Write copied graphs in pieces rather than whole, and expect to replace the
+unwritable nodes with something equivalent. In our case the check belonged in C++ anyway, which is
+where it ended up.
+
+### Component template properties are lost when the Blueprint compiles
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Add a component to a Blueprint from script, set properties on its `<Name>_GEN_VARIABLE` template,
+then compile, and the values are gone. No warning; the template simply looks as if nothing was
+ever set on it.
+
+**Workaround.** Compile first, set properties after. If a later step compiles again - and
+`write_graph_dsl` does - set them again after that too.
+
+### A placed instance remembers an empty override of a newly added component
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+When a component is added to a Blueprint, actors already placed in a level pick it up. But an
+instance that got reconstructed while the template was still empty records `None` as its own
+override, and the template no longer reaches it: the component is present on the actor and its
+properties read empty no matter what the Blueprint says.
+
+**Workaround.** Restart the editor - an unsaved override dies with it and the actor takes the
+template value - or set the value directly on the instance.
+
+### The batching sandbox cannot run editor Python, and nothing else can either
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The batching toolset runs a sandboxed interpreter: `json`, `math`, `datetime`, `copy`, `re`,
+`time`, and the tool-calling function. No `unreal`, no `os`, no file access. And there is no tool
+anywhere in the catalogue for running a Python file or a console command in the editor, so an
+editor script cannot be launched through this API at all.
+
+**Workaround.** Either a human runs it from the editor's Python console - `Output Log`, with the
+input switched from `Cmd` to `Python` - or it runs headless as a commandlet:
+`UnrealEditor-Cmd.exe <uproject> -run=pythonscript -script=<file>`.
+
+### Localisation keys cannot be set on FText from editor Python
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`unreal.Text.as_localizable` does not exist; `hasattr` on it returns `False`. Any text an import
+script writes into an asset is culture-invariant, and nothing shows it: the getter returns the
+display string either way, so the assets look correct while carrying no keys at all.
+
+**Workaround.** A one-function `UBlueprintFunctionLibrary` over `FText::AsLocalizable_Advanced`,
+called from the import script. Worth checking with `hasattr` before assuming any Python-side text
+helper exists - several documented ones do not.
+
+### `UPanelSlot* Slot` shadows a member and fails the build
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Not an API problem, but it costs a build cycle: `UWidget` has a member named `Slot`, so a local
+named `Slot` inside a `UUserWidget` method raises C4458, which the default project settings treat
+as an error. `AddChild` returning a slot makes this a natural name to reach for.
+
+**Workaround.** Name it anything else.
