@@ -187,6 +187,19 @@ The command goes through, the overlay never appears, and the screenshot comes ba
 which you can read with the log toolset and a pattern filter. Slower to read, but it is text,
 and text is what an agent can actually use.
 
+### `CaptureViewport` renders no particles at all
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** no
+
+Neither Cascade nor Niagara shows up in a captured frame, while the same effect plays
+normally in the editor viewport. Verified by dropping a known-good Niagara system at the
+same spot and capturing again - still empty. Everything else in the shot renders fine,
+which is what makes this expensive: the capture looks like proof that the effect is
+broken, or that the asset pack does not work, and you start replacing assets.
+
+**No workaround.** Any visual judgement about VFX has to be made by a human looking at
+the editor. Budget for that when planning an agent-driven FX pass.
+
 ---
 
 ## ObjectTools
@@ -423,6 +436,21 @@ frame is never shown through the camera.
 **Workaround.** After a rate change, stop trusting your notes: read the channel with `get_keys`,
 clear it, and write again from the new numbers.
 
+### A `NaN` view range makes the Sequencer timeline disappear
+
+**Kind:** bug · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The time ruler and every key vanish from the Sequencer panel while the tracks themselves
+are intact. Track filters are empty, nothing is muted, soloed, locked or deactivated, so
+the usual suspects all check out and the panel still draws nothing.
+
+`SequencerTools.get_view_range` returns `{"start": -2.9, "end": NaN}`. The widget cannot
+compute a pixel from a range whose end is not a number, so it draws none.
+
+**Workaround.** `set_view_range` with sane seconds, then reopen the sequence - the panel
+reads the range when it opens and may not pick it up live. How the value became `NaN` in
+the first place was not established.
+
 ---
 
 ## PCGToolset
@@ -583,6 +611,34 @@ somebody else's material graph and hit a named reroute, the chain simply ends th
 
 **Workaround.** Infer the name from context. There is no programmatic route, so plan graph
 traversal knowing it has holes.
+
+### Rebuilding a Material Function silently disconnects every caller
+
+**Kind:** bug · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Delete all expressions inside a Material Function and build it again - same name, same
+inputs, same outputs - and every `MaterialFunctionCall` in the materials that use it
+loses **all** of its input connections. The materials still compile, the log stays clean,
+and nothing reports a problem.
+
+What you see instead is a broken-looking surface. In our case an unconnected divisor
+became zero, the division produced garbage on the function's gradient outputs, the
+garbage fed the normal, and the material went flat and matte. The symptom points at
+shading; the cause is in a different asset entirely.
+
+**Workaround.** Edit Material Functions in place, node by node - never delete and
+recreate one that has callers. After any function edit, verify with
+`get_expression_inputs` on the call nodes: disconnected pins come back as `NONE`.
+
+### The `Power` node input is called `Exp`, not `Exponent`
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`connect_expressions` fails outright when you pass `Exponent`, which is what the node
+shows in the editor.
+
+**Workaround.** Read pin names from `get_expression_input_names` rather than from the
+editor label. Cheap habit, and it covers the whole node library, not just this one.
 
 ---
 
