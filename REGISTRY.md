@@ -10,6 +10,7 @@ See the [README](README.md) for what the markers mean.
 - [ObjectTools](#objecttools)
 - [ProgrammaticToolset](#programmatictoolset)
 - [SequencerTools](#sequencertools)
+- [Niagara](#niagara)
 - [PCGToolset](#pcgtoolset)
 - [MaterialTools](#materialtools)
 - [Animation and meshes](#animation-and-meshes)
@@ -83,6 +84,20 @@ that got me was a typo in a path I had typed twenty times.
 
 Subfolders are their own trap: plugin content does not always live where its category suggests,
 and the file you want may sit one level up from the folder named after its feature.
+
+### `exists` and `save_assets` start denying that a loaded asset exists
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** partial
+
+After a PIE session or a C++ hot reload, `exists`, `is_dirty`, `get_asset_tags` and `save_assets`
+begin answering `Asset does not exist` for assets that plainly do. `find_assets` still returns the
+same path in the same call sequence, the `.uasset` is on disk, and `ObjectTools` reads and writes
+the object through its `refPath` without complaint. So edits keep applying and only the save is
+lost - which is the worst shape this failure could take, because nothing warns you until the next
+restart throws the work away. Four times in one session.
+
+**Workaround.** Restart the editor to clear it. Until then, ask a human to hit Save All, and treat
+a successful `set_properties` as unsaved until proven otherwise.
 
 ---
 
@@ -271,6 +286,18 @@ reflection. Absence from the reflection surface does not mean absence from the o
 
 **Workaround.** Change it in the editor UI and move on. Not everything is worth automating.
 
+### `set_properties` refuses to grow an array and edit its elements in one call
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Send an array that is both longer than the stored one and different in its existing entries, and
+the whole property is rejected: `ArrayAdd: elements changed alongside the size change; insertion
+points are ambiguous`. Appending alone is fine, editing in place is fine, both at once is not.
+
+**Workaround.** Read the current array with `get_properties`, append to what came back, and send
+the old entries unchanged. Byte for byte unchanged: retyping a stored `0.78899997` as `0.789`
+counts as an edit and brings the refusal back.
+
 ---
 
 ## ProgrammaticToolset
@@ -450,6 +477,48 @@ compute a pixel from a range whose end is not a number, so it draws none.
 **Workaround.** `set_view_range` with sane seconds, then reopen the sequence - the panel
 reads the range when it opens and may not pick it up live. How the value became `NaN` in
 the first place was not established.
+
+### A material parameter track cannot be built, and neither can a component binding
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** partial
+
+Adding the track itself succeeds and gets you nothing: `MovieSceneComponentMaterialTrack` decides
+which material slot it drives through `MaterialInfo`, a `UPROPERTY()` with no `EditAnywhere`, so
+`set_properties` will not write it and the track sits there animating nothing. The section is shut
+the same way - `ScalarParameterInfosAndCurves` is equally unreachable - and the function that would
+create a parameter channel, `AddScalarParameterKey`, is C++ and Blueprint only, which puts it out
+of reach of the sandboxed script runner as well.
+
+Component bindings have the same shape of problem from the other side: `add_actors` takes actors,
+and `rebind_component` needs a component binding to already exist, so there is no first one to
+create.
+
+**Workaround.** Both are two clicks for a person in Sequencer - add the component binding, then
+pick the parameter. Everything after that is scriptable in full: once the channel exists, keys go
+in through the keyframing toolset normally. Plan the flow around one short manual step rather than
+trying to automate past it.
+
+---
+
+## Niagara
+
+### `Export Particle Data To Blueprint` delivers nothing in an editor world
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** partial
+
+The data interface does not call your handler directly. Particles go into a queue, and
+`PerInstanceTickPostSimulate` hands that queue to `FNiagaraWorldManager::EnqueueGlobalDeferredCallback`,
+which is drained on a game world tick. In the editor it is never drained, so the handler is not
+called once - not while scrubbing a sequence that drives the system in Desired Age mode, and not
+with the system looping and auto-activating in the level viewport.
+
+What makes this expensive is how healthy everything looks while it happens. The stack reports zero
+errors, the user parameter resolves, the handler object is bound on the component, and the log is
+silent. It reads as a broken binding, and you can spend an hour re-checking the binding.
+
+**Workaround.** Test in PIE first. The same asset works there immediately. Accept that effects
+built on this interface cannot be previewed in the editor at all, and budget for tuning them in
+play sessions.
 
 ---
 
@@ -639,6 +708,22 @@ shows in the editor.
 
 **Workaround.** Read pin names from `get_expression_input_names` rather than from the
 editor label. Cheap habit, and it covers the whole node library, not just this one.
+
+### ☠️ Adding an input to a material function with callers crashes the editor
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`Assertion failed: MatchingInput [File: .../MaterialEditorUtilities.cpp] [Line: 635]`, and
+everything unsaved goes with it. The new input changes the function signature while a
+`MaterialFunctionCall` in a consuming material still carries the old pin set, and the graph rebuild
+asserts on the mismatch rather than reconciling it.
+
+This is the louder relative of the entry above about rebuilding a function: there the callers lost
+their connections silently, here the process dies.
+
+**Workaround.** Do not change the signature of a function that has consumers. If the function needs
+another value, put a `CollectionParameter` node inside it and read the value from a parameter
+collection - functions accept those, and the signature stays as it was.
 
 ---
 
