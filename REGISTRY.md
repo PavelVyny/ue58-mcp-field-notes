@@ -433,8 +433,14 @@ is the arithmetic mean of your keys and the original.
 I asked for a focus distance of 131 cm and got 50065. That number makes no sense until you know
 there are two tracks.
 
+The sections are not always empty. A camera created with the playhead on frame 45 came with keys
+on frame 45: 35 mm, f/2.8, focus 100000. The symptom then is different - a soft image, and any
+value typed into the Details panel snaps back as soon as the sequence plays, because the track
+wins.
+
 **Workaround.** `get_tracks_on_binding` plus `get_track_display_name` to find what is already
-there, write into the existing track, and `remove_track` on any duplicate you created.
+there, write into the existing track, and `remove_track` on any duplicate you created. Change the
+lens by changing the key, not the component property.
 
 ### Unbounded sections are normal, and asking about their range throws
 
@@ -497,6 +503,53 @@ create.
 pick the parameter. Everything after that is scriptable in full: once the channel exists, keys go
 in through the keyframing toolset normally. Plan the flow around one short manual step rather than
 trying to automate past it.
+
+### `set_camera_cut_binding` fails on every call
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+The tool builds `unreal.Guid(camera_binding_id)` from the string you pass, and the Python `Guid`
+constructor does not take a string. Every call ends in
+`call() takes at most 0 arguments (1 given)`, whatever the ID.
+
+**Workaround.** Write the property on the Camera Cut section directly:
+`ObjectTools.set_properties` with
+`{"CameraBindingID": {"guid": "<camera binding GUID>", "sequenceId": 0, "resolveParentIndex": 0}}`.
+The GUID is the `bindingId` of the camera's binding proxy. Read it back with `get_properties` to
+confirm.
+
+### The engine's FK Control Rig cannot be added to a binding
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** partial
+
+`find_or_create_track` and `bake_to_control_rig` take a path to a Control Rig asset and call
+`get_control_rig_class()` on it. The built-in `FKControlRig` is a native class with no asset, so
+neither tool can create it. The Mannequin rig assets are no substitute on older skeletons:
+`CR_Mannequin_Body` expects the UE5 bone set (`spine_04`, `spine_05`, `neck_02`).
+
+**Workaround.** One manual step: on the character's track, `+ Track → Control Rig → FK Control
+Rig`. From then on everything is scriptable. `get_control_rigs` sees it, and the rig tools find it
+by the string `"FKControlRig"`, because they match the rig by substring of its class path.
+
+Two things save time once it is there. With no keys, the rig holds the reference pose and replaces
+the animation blueprint entirely, so any bone you do not key stands in reference pose. And each
+`<bone>_CONTROL` value is a delta from the reference pose in the bone's own frame:
+`world = world_at_zero_delta · delta`. That model matched the editor to under 0.001 cm, and it is
+enough to run your own FK and two-bone IK outside the editor and write only local values.
+
+### `set_world_transform` on an FK control puts the bone somewhere else
+
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`SequencerControlRigTools.set_world_transform` on an FK Control Rig control, asked to keep the
+bone where it was and turn it to (63.4, −180, 113.4), read back as (63.4, 90, 113.4) with the bone
+moved 112 cm away. The cause is not established. The tool builds `unreal.Transform(rotation=[pitch,
+yaw, roll])`, so component order is the first suspect, but order alone does not explain the moved
+position.
+
+**Workaround.** Do not use it on FK controls. Compute the local delta yourself (see the entry
+above) and write it with `set_euler_transform`, then check the result with `get_world_transform`,
+which reads correctly.
 
 ---
 
