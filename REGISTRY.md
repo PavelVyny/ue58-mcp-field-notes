@@ -553,6 +553,45 @@ which reads correctly.
 
 ---
 
+### Reading an actor's path frame by frame: `get_actor_transform_at_frame`, not `bake_channel_keys`
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+To build a camera that follows a keyframed actor you need the actor's evaluated position on every
+frame, not its keys. `SequencerKeyframingTools.bake_channel_keys` looks like the tool for it and is
+not: over a 346-frame range it returned a single number (it did not alter the channel's keys).
+
+**Workaround.** `SequencerControlRigTools.get_actor_transform_at_frame {sequence, actor_name, frame}`
+works for any actor in the sequence, no rig required, and returns the value the sequence actually
+evaluates, interpolation included. `actor_name` is the short name of the spawned instance from
+`get_bound_objects`. It is slow, roughly a second per call: a hundred samples plus the key writes in
+one `ProgrammaticToolset` script ran past the client's 120 s and went to the background, so split
+large jobs.
+
+### `trace_world` returns a distance, and a spawnable at the sampled frame blocks the ray itself
+
+**Kind:** limitation · **Hit on:** 5.8.3 · **Workaround:** yes
+
+`SceneTools.trace_world {start, end}` returns only the distance to the first hit, or `null`. No hit
+point, no actor. A start point inside collision returns 0. The trap: sampling a Sequencer actor's
+position moves the playhead, so the spawnable now stands exactly where you are about to trace from,
+and every ray hits it. A clearance check along a flight path came back as all zeros, including in
+open air.
+
+**Workaround.** Collect the positions first, then move the playhead to a frame where the spawnable
+does not exist (a `false` key on its Spawn track), call `force_evaluate`, and only then trace.
+
+### An animation section's play rate is a string inside `Params`, and setting it resizes the section
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+On a skeletal animation section the rate is not a plain float:
+`Params.playRate = "EMovieSceneTimeWarpType::FixedPlayRate(PlayRate=0.780000)"`, with `bReverse` in the
+same struct. Read `Params` with `get_properties`, change the field, write the whole struct back with
+`set_properties`. The engine then stretches the section to fit the clip at the new rate (a 563-660
+section became 563-687), so set the range again afterwards. Keep the clip at least as long as the
+section, or it restarts at the end and pops.
+
 ## Niagara
 
 ### `Export Particle Data To Blueprint` delivers nothing in an editor world
