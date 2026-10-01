@@ -592,6 +592,20 @@ same struct. Read `Params` with `get_properties`, change the field, write the wh
 section became 563-687), so set the range again afterwards. Keep the clip at least as long as the
 section, or it restarts at the end and pops.
 
+### `set_section_ease_in` / `set_section_ease_out` take ticks, not frames
+
+**Kind:** defect · **Hit on:** 5.8.3 · **Workaround:** yes
+
+The docstring says the duration is in frames. The tool calls
+`UMovieSceneSectionEasingExtensions::SetEaseInDuration`, which writes the number straight into the
+section's manual ease duration, and that field is stored in the sequence's tick resolution (24000 per
+second by default). `duration: 10` is 1/40 of a frame at 60 fps, so a crossfade between two animation
+sections turns into an instant cut, while every readback still reports "10". The symptom points the
+wrong way: the clips look like they pop despite the ease being set.
+
+**Workaround.** Pass `frames × tickResolution / displayRate` (400 per frame for 24000 ticks at 60 fps)
+and read `Easing.manualEaseInDuration` back with `get_properties` after the write.
+
 ## Niagara
 
 ### `Export Particle Data To Blueprint` delivers nothing in an editor world
