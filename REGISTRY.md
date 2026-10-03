@@ -103,9 +103,18 @@ a successful `set_properties` as unsaved until proven otherwise.
 
 ## EditorAppToolset
 
-### `CaptureViewport` ignores `captureTransform`, and the frame is not your viewport either
+### `CaptureViewport` drops a `captureTransform` written with the wrong keys
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** none (ask a human)
+**Kind:** defect · **Hit on:** 5.8.0, re-tested on 5.8.3 · **Workaround:** yes
+
+> **Correction (re-tested).** An earlier version of this note said the tool ignores
+> `captureTransform` altogether. That was wrong. The pose is applied, but only when it is written
+> as `{location: {x, y, z}, rotation: {pitch, yaw, roll}, scale: {x, y, z}}`, the same shape the
+> validation error of `SetCameraTransform` prints. Written as
+> `{translation, rotation: {x, y, z, w}, scale3D}` it is silently dropped, and the capture comes
+> from the world origin. The `cameraLocation` field of the response tells you which happened: it
+> reads `0, 0, 0` when the pose was dropped and your coordinates when it was used. The original
+> story is kept below because the trap it describes is real.
 
 This one took three rounds to understand, so here is the whole arc.
 
@@ -119,12 +128,12 @@ without moving the viewport - clean, no nudging. That went in the notes too.
 Then I ran three captures with three different `translation` values and got three identical
 images, of a part of the level neither I nor the argument had asked for.
 
-So: the tool returns its own fixed view. Not the active viewport, not the pose you passed.
-Every explanation before this one was me fitting a story to a coincidence.
+The conclusion back then was that the tool returns its own fixed view. The real cause was the key
+names: `translation` is not a field the tool reads, so every one of those captures came from the
+same default pose.
 
-**Workaround.** None inside the toolset. For visual verification, ask the human at the keyboard
-for a screenshot. `GetCameraTransform` is fine - it reports the real camera correctly, so you
-can still reason about where things are. You just cannot see them.
+**Workaround.** Use `location` / `rotation` (as a rotator) / `scale`, and check `cameraLocation`
+in the response before trusting the image.
 
 ### Optional arguments that are not optional
 
@@ -132,6 +141,8 @@ can still reason about where things are. You just cannot see them.
 
 `CaptureViewport` marks `captureTransform` and `annotations` as `TOptional`. Omit either and
 the call fails with `input param X needs a default value`. Both are mandatory in practice.
+Passing them explicitly as `null` is accepted, though (re-tested on 5.8.3), and that is the
+useful form: see the next note about capturing through a camera.
 
 `StartPIE` is the same shape: it wants the full `options` block - `bSimulate`, `playMode`,
 `warmupSeconds` - and `playMode` is required even when `bSimulate` already says what you mean.
@@ -141,6 +152,27 @@ Disabled annotations are not an omission, they are a block of zeros plus
 
 **Workaround.** Treat `TOptional` in this API as documentation of intent, not of behaviour.
 Pass everything.
+
+### Capturing through a sequence camera, and the camera bodies that block it
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+To see what a Sequencer camera actually frames, lock the viewport to the camera cuts
+(`set_camera_lock(true)`), move the playhead, and call `CaptureViewport` with
+`captureTransform: null` and `annotations: null`. The capture then comes from the cut's camera
+with that camera's field of view (a 24 mm lens on a 16:9 Digital Film back reports 52.7°, not the
+viewport's 90°).
+
+The catch: every cine camera in the editor world draws its body mesh
+(`CameraProxyMeshComponent_0`). With several cameras placed around one subject, another camera
+sitting on the line of sight fills the frame, and depth of field turns it into a dark, soft blur.
+A `trace_world` from the camera to the subject comes back clean, because the body has no
+collision, so the symptom looks like an empty or unlit scene.
+
+**Workaround.** For previews, set `bVisible: false` on `CameraProxyMeshComponent_0` of each
+spawned camera with `ObjectTools.set_properties`. Neither renders nor games ever draw those
+bodies. Also move the playhead between captures; the first capture after a change can still be
+the previous frame.
 
 ### `CaptureViewport` returns ~2.8 MB and the payload lands in a file
 
@@ -605,6 +637,74 @@ wrong way: the clips look like they pop despite the ease being set.
 
 **Workaround.** Pass `frames × tickResolution / displayRate` (400 per frame for 24000 ticks at 60 fps)
 and read `Easing.manualEaseInDuration` back with `get_properties` after the write.
+
+### A manual ease of 0 on an overlapping section pops, and script-made sections get no auto ease
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+Two animation sections overlap, the incoming one eases in, and the pose still jumps on the last
+frame of the outgoing one. The outgoing section had `bManualEaseOut = true` with a duration of 0:
+it held full weight to its last frame and vanished, while the incoming clip was only half blended
+in. The ease on the incoming section was fine; the one nobody looked at was the problem.
+
+Clearing the manual flags in `Easing` (read the whole struct, set `bManualEaseIn` /
+`bManualEaseOut` to false, write it back) switches both sections to the automatic ease, which
+equals the overlap. That auto value is only computed when the sections are edited in the
+Sequencer UI, though: sections created by a script with `add_section` + `set_section_range` keep
+`autoEaseInDuration = 0`.
+
+**Workaround.** Edited-by-hand sections: clear the manual flags. Script-made sections: set a
+manual ease in ticks (previous note) on both sides of every overlap.
+
+### `create_camera` makes no camera cut when the sequence already has a cut track
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+The new camera gets its binding, transform and spawn tracks, and the three lens tracks on its
+`CameraComponent` (see the note above), and it is placed at the viewport's pose. It gets no
+section on the Camera Cuts track, so the sequence never looks through it.
+
+**Workaround.** `add_section` on the cut track, `set_section_range`, then point the section at the
+camera with `ObjectTools.set_properties` and
+`{"CameraBindingID": {"guid": "<bindingId>", "sequenceId": 0, "resolveParentIndex": 0}}`
+(the path from the `set_camera_cut_binding` note).
+
+### `get_bound_objects` returns `[]` for spawned cameras that exist
+
+**Kind:** defect · **Hit on:** 5.8.3 · **Workaround:** yes
+
+After `set_playhead_frame`, in the same call and in the next one, `get_bound_objects` returned an
+empty list for every spawnable camera, while `find_actors` showed them all in the level.
+`refresh_sequence` did not help. The object names change on every respawn as well
+(`CineCameraActor4_5` became `_6`), so a cached reference stops resolving.
+
+**Workaround.** Find the spawned cameras with
+`find_actors {actor_type: "/Script/CinematicCamera.CineCameraActor"}` and identify them by
+`get_label`, fresh each time.
+
+### `remove_binding` leaves an empty entry in its folder
+
+**Kind:** defect · **Hit on:** 5.8.3 · **Workaround:** yes
+
+A sequence folder keeps the GUID of a binding that `remove_binding` deleted, and
+`get_folder_contents` lists it as a binding named `""`. There is no tool to take a child out of a
+folder, and the folder's child list is not readable through `get_properties`. Child bindings
+(`CameraComponent` under a camera) also stay behind unless removed first.
+
+**Workaround.** Remove children first (`get_child_possessables`, then `remove_binding` on each).
+To clean the folder, rebuild it: `add_root_folder` with the same name, `add_binding_to_folder` for
+every live binding, `remove_root_folder` on the old one. Bindings are untouched by this.
+
+### A camera cut shows the actor's label, not the binding's name
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+`set_binding_name` renames the row in the Sequencer tree, but the Camera Cuts track keeps showing
+`CineCameraActorN`: the cut displays the camera actor's label. `ActorTools.set_label` on the
+spawned instance fixes it, and the label survives saving and reopening the sequence, so it lands
+in the spawnable template.
+
+**Workaround.** Rename both: the binding for the tree, the actor label for the cut track.
 
 ## Niagara
 
