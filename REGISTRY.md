@@ -706,6 +706,31 @@ in the spawnable template.
 
 **Workaround.** Rename both: the binding for the tree, the actor label for the cut track.
 
+### Leaving a cutscene: sections restore by default, and `GetViewTarget` lies during the blend
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+Three things that together decide whether the hand-off from a cutscene to gameplay looks clean.
+
+- A section whose When Finished is *Project Default* restores state: `BaseEngine.ini`,
+  `[/Script/LevelSequence.LevelSequence] DefaultCompletionMode=RestoreState`. The player pawn
+  driven by a transform track snaps back to where it stood before the cutscene. Set the pawn's
+  transform section to Keep State.
+- Blending into the gameplay camera is the ease-out of the last camera-cut section plus the
+  track's Can Blend flag. The game handler then calls `SetViewTarget(pawn, blend)`.
+- During that blend `APlayerCameraManager::GetViewTarget()` returns the *pending* target, the
+  pawn you are blending to (`PlayerCameraManager.cpp`, "if blending to another view target,
+  return this one first"). Code that wants the camera the blend is leaving must read
+  `ViewTarget.Target`. We drove the control rotation from `GetViewTarget()` and the gameplay
+  camera started following the pawn's yaw the moment the blend began.
+
+**Workaround, for the hand-off to read as one shot.** The blend interpolates field of view and
+position with an ease, so most of a 67° to 90° FOV change lands mid-blend and reads as a zoom, and
+a static cinematic camera mixed with a gameplay camera that is already moving reads as a jerk. Make
+the last cinematic camera converge on the gameplay camera itself (same FOV, same boom pose) before
+the blend ends, and give the pawn the camera's yaw on the last frame, or the pawn turns towards
+the control rotation when input comes back.
+
 ## Niagara
 
 ### `Export Particle Data To Blueprint` delivers nothing in an editor world
@@ -1082,6 +1107,24 @@ while they run - always worth announcing before you do it.
 
 ---
 
+### Localised packages under `/L10N/` are never used in the editor, and uncooked `-game` crashes with Mesh Partition
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** partial
+
+Asset localisation (a copy of an asset under `Content/L10N/<culture>/` with the same relative path)
+is switched off in the editor on purpose: `Linker.cpp`, "The editor must not redirect packages for
+localization", guarded by `!GIsEditor`. In PIE, with any culture and any preview language, you hear
+and see the source assets. It only works in a game process.
+
+The usual way to get a game process without cooking, `UnrealEditor.exe <project> -game
+-culture=xx`, dies on map load when the experimental Mesh Partition plugin is enabled:
+`Assertion failed: DescriptorCache` in `MeshPartitionWorldUpdater.cpp`. The world updater asks for
+an editor subsystem that does not exist without the editor.
+
+**Workaround.** Cook. For checks in PIE, a throwaway copy of the sequence whose sections point at
+the localised assets directly. Text localisation is not affected: the game-language preview works in
+PIE.
+
 ## Blueprint graphs and editor Python
 
 Everything here was hit while moving a dialogue system from a spec into a running game: adding a
@@ -1204,3 +1247,31 @@ named `Slot` inside a `UUserWidget` method raises C4458, which the default proje
 as an error. `AddChild` returning a slot makes this a natural name to reach for.
 
 **Workaround.** Name it anything else.
+
+### Bare `UPROPERTY()` fields are invisible to editor Python
+
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+
+A property declared `UPROPERTY()` with no specifiers fails `get_editor_property` and
+`set_editor_property` with "Failed to find property". The ones that cost us time:
+
+- `MovieSceneCameraCutTrack.bCanBlend`: no way to set it from Python. Tick Can Blend on the track
+  by hand.
+- `FMovieSceneEasingSettings` fields (`ManualEaseInDuration` and the rest): read through
+  `unreal.MovieSceneSectionEasingExtensions.get_ease_in_duration(section)` /
+  `get_ease_out_duration`, in ticks.
+- `HitResult` from `SystemLibrary.line_trace_single`: no fields at all. `hit.to_tuple()` follows
+  the Break Hit Result order, `[0]` blocking hit and `[5]` impact point.
+- `PlayerCameraManager` has no `get_view_target`. `PlayerController.get_view_target()` exists,
+  but during a blend it returns the target being blended to.
+
+### An animation section's play rate is a `MovieSceneTimeWarpVariant` in editor Python
+
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+
+`params.get_editor_property("play_rate")` is not a float: formatting it with `%f` raises "must be
+real number, not MovieSceneTimeWarpVariant", and setting a plain number fails too. The same field is
+a string through the Sequencer tools (see the SequencerTools entry above).
+
+**Workaround.** `unreal.MovieSceneTimeWarpExtensions.conv_play_rate_to_time_warp_variant(0.7)` to
+write, `to_fixed_play_rate(variant)` to read.
