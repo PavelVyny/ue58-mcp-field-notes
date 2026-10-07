@@ -158,7 +158,7 @@ A property declared `UPROPERTY()` with no specifiers fails `get_editor_property`
 
 `params.get_editor_property("play_rate")` is not a float: formatting it with `%f` raises "must be
 real number, not MovieSceneTimeWarpVariant", and setting a plain number fails too. The same field is
-a string through the Sequencer tools (see the SequencerTools entry above).
+a string through the Sequencer tools (see [the play-rate entry](sequencer.md#an-animation-sections-play-rate-is-a-string-inside-params-and-setting-it-resizes-the-section)).
 
 **Workaround.** `unreal.MovieSceneTimeWarpExtensions.conv_play_rate_to_time_warp_variant(0.7)` to
 write, `to_fixed_play_rate(variant)` to read.

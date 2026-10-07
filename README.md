@@ -38,7 +38,7 @@ workaround if there is one.
 - **Workaround:** `yes`, `yes (manual)` when a human has to press something, `partial` when it
   covers only part of the problem, `n/a` for a note with nothing to work around, or `none`.
 
-Grouped by toolset. If you know the symptom but not the toolset, search the page: the
+Grouped by toolset. If you know the symptom but not the toolset, search across the files: the
 symptom is always in the heading.
 
 ## What it covers
@@ -61,7 +61,7 @@ entries come up in practice.
 
 This is deliberately the toolset-specific counterpart to
 [ue5-mcp](https://github.com/ibrews/ue5-mcp), a server-agnostic field manual that covers what
-bites you *after* you know the tool names. This file is about the names themselves: Epic's
+bites you *after* you know the tool names. This register is about the names themselves: Epic's
 own toolsets, their arguments, and where they lie to you.
 
 Reproduced in my project, on the version stated in each entry. Where I could not reproduce
