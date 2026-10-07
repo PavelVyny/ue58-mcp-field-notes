@@ -19,7 +19,8 @@ down, because the asset it touched happened to be open in its own window.
 - **Kind:** `defect` (the tool does the wrong thing), `limitation` (works as designed, the
   design costs you), `note` (correct but not obvious).
 - **Hit on:** the engine version where I reproduced it.
-- **Workaround:** `yes`, `yes (manual)` when a human has to press something, or `none`.
+- **Workaround:** `yes`, `yes (manual)` when a human has to press something, `partial` when it
+  covers only part of the problem, `n/a` for a note with nothing to work around, or `none`.
 
 Grouped by toolset. If you know the symptom but not the toolset, search the page: the
 symptom is always in the heading.

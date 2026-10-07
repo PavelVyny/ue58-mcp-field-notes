@@ -23,9 +23,12 @@ See the [README](README.md) for what the markers mean.
 ## Arguments, names and paths
 
 Naming across this API is not consistent, and the inconsistencies are not documented. This
-section is about the tools' own surface - argument names, return shapes, truncation - rather than
+section is about the tools' own surface - argument names, return shapes, silent filtering - rather than
 about UE's object-path conventions in general, which
 [ue5-mcp §4](https://github.com/ibrews/ue5-mcp) already covers well.
+
+`SceneTools.trace_world` and what it returns are covered under SequencerTools, where its trap lives:
+[`trace_world` returns a distance](#trace_world-returns-a-distance-and-a-spawnable-at-the-sampled-frame-blocks-the-ray-itself).
 
 ### Argument names diverge between toolsets, and inside one toolset
 
@@ -44,18 +47,31 @@ Caught in practice, all of them by having the call fail:
   and there is no `assets` argument at all.
 
 **Workaround.** Let the validation error tell you the schema - that is the intended way to
-discover it. But do that outside a batch script: in a script a wrong argument name rolls back
-everything the script has already done, so the cheap self-correction becomes an expensive one.
+discover it. This only works when a required argument is missing: the schema is printed for a
+missing required parameter. A misspelled optional argument is dropped without any error, and the
+tool runs with its default.
 
-### `find_actors` truncates at 20 without saying so
+Do the discovery outside a batch script. On 5.8.0 a wrong argument name inside a script rolled
+back everything the script had already done. On 5.8.3 nothing is rolled back (re-tested live):
+the calls before the failure stay applied, so rerunning the fixed script applies them twice. The
+schema error itself comes back inside the script as a `RuntimeError` that `try/except` catches.
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+### `find_actors` does not stop at 20, but `find_assets` skips any `Actors` folder
 
-Ask broadly and you get twenty results and no indication that there were more. `find_assets`
-appears to do the same on wide queries.
+**Kind:** defect · **Hit on:** 5.8.0, re-tested on 5.8.3 · **Workaround:** yes
 
-**Workaround.** Treat exactly twenty results the way you would treat zero: as a number that means
-"ask again, differently".
+> **Correction (re-tested).** An earlier version of this note said `find_actors` truncates at
+> twenty results without saying so, and that `find_assets` appears to do the same. Re-tested live
+> on 5.8.3: 94 actors / 26 assets returned. Neither tool has a limit parameter, and the 5.8.3
+> source of both has no cap. Where the twenty came from on 5.8.0 is not established.
+
+What `find_assets` does drop without saying so is any package whose path contains a folder named
+`Actors` (or `__ExternalActors__`): a filter in the tool's own source (`asset.py`). On 5.8.3 it
+returned `[]` for a plugin's `Actors` folder, while `exists` on an asset inside that folder
+returned `true`.
+
+**Workaround.** Do not read an empty `find_assets` under an `Actors` folder as absence: check the
+path with `exists`.
 
 ### Actor tools only see loaded World Partition cells
 
@@ -79,25 +95,50 @@ the chain that kills the editor - see
 The log names it clearly once you know what to look for: `Failed to find object` → `is not valid
 Object for property` → `Undo Execute tool script` → `appError`.
 
+That chain is from 5.8.0. On 5.8.3 `execute_tool_script` runs without a transaction (re-tested
+live), so the undo step that led to the crash is gone. The bad path still fails the whole script
+and leaves it half-applied.
+
 **Workaround.** `find_assets` first. Every time, including the paths you are sure about - the one
 that got me was a typo in a path I had typed twenty times.
 
 Subfolders are their own trap: plugin content does not always live where its category suggests,
 and the file you want may sit one level up from the folder named after its feature.
 
-### `exists` and `save_assets` start denying that a loaded asset exists
+### `exists` and `save_assets` deny that an asset exists while PIE is running
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** partial
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** yes
 
-After a PIE session or a C++ hot reload, `exists`, `is_dirty`, `get_asset_tags` and `save_assets`
-begin answering `Asset does not exist` for assets that plainly do. `find_assets` still returns the
-same path in the same call sequence, the `.uasset` is on disk, and `ObjectTools` reads and writes
-the object through its `refPath` without complaint. So edits keep applying and only the save is
-lost - which is the worst shape this failure could take, because nothing warns you until the next
-restart throws the work away. Four times in one session.
+> **Correction (source-checked, 5.8.3).** An earlier version of this note said this starts after
+> a PIE session or a C++ hot reload and lasts until a restart. The condition is narrower: it holds
+> while a PIE or Simulate session is running.
 
-**Workaround.** Restart the editor to clear it. Until then, ask a human to hit Save All, and treat
-a successful `set_properties` as unsaved until proven otherwise.
+`exists` answers false, and `save_assets`, `is_dirty`, `get_asset_tags` and `get_asset_class` fail
+with `Asset does not exist`, for assets that plainly do. All of them go through
+`EditorAssetSubsystem.DoesAssetExist`, which returns false at once while the editor is in a play
+mode (`EditorScriptingHelpers.cpp`); the log has `LogUtils: Error: The Editor is currently in a
+play mode` next to it. `find_assets` still returns the same path, the `.uasset` is on disk, and
+`ObjectTools` reads and writes the object through its `refPath` without complaint. So edits keep
+applying and only the save is lost, which is the worst shape this failure could take. Four times
+in one session.
+
+**Workaround.** `IsPIERunning`, then `StopPIE`, then save again. Treat a successful
+`set_properties` made during PIE as unsaved until the save goes through.
+
+### `save_actor` fails on a World Partition actor with "Asset does not exist"
+
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** yes (manual)
+
+`SceneTools.save_actor` answers `Asset does not exist: …/__ExternalActors__/…` for an actor
+of a World Partition level. Assets save normally, the level does not. The tool routes through
+`save_assets`, whose existence check turns the package path into `<package>.<package short
+name>`, an object that an external-actor package does not contain. Re-tested on 5.8.3 without
+PIE: `exists` on the package of an external actor whose `.uasset` is on disk returned false.
+
+Seen on one map only. The cause is read from source; `save_actor` itself was not re-run on an
+already saved actor.
+
+**Workaround.** Save the level by hand in the editor.
 
 ---
 
@@ -144,14 +185,23 @@ the call fails with `input param X needs a default value`. Both are mandatory in
 Passing them explicitly as `null` is accepted, though (re-tested on 5.8.3), and that is the
 useful form: see the next note about capturing through a camera.
 
-`StartPIE` is the same shape: it wants the full `options` block - `bSimulate`, `playMode`,
-`warmupSeconds` - and `playMode` is required even when `bSimulate` already says what you mean.
+Cause (source-checked, 5.8.3): the schema omits `TOptional` parameters from `required`, but the
+invoker demands a `default` for every top-level parameter you leave out
+(`JsonSchemaGenerator.cpp`, `ObjectFunctionToolCall.cpp`). An explicit `null` passes that check.
+PCG `AddNode`/`UpdateNode` behave the same way for `nodeTitle`/`nodeComment`, whose C++ default is
+an empty string (observed; not traced in source).
 
-Disabled annotations are not an omission, they are a block of zeros plus
-`classFilter: {"refPath": ""}`.
+`StartPIE` wants its `options` block as a parameter. An earlier version of this note said
+`playMode` inside it is required even when `bSimulate` already says what you mean. In the 5.8.3
+source the fields of that block are declared optional with defaults, and the server does not
+check nested fields: in a `CaptureViewport` re-test an `annotations` block with fields left out
+was accepted, and the missing ones took the struct's defaults, not zeros. `StartPIE` itself was
+not re-tested.
 
-**Workaround.** Treat `TOptional` in this API as documentation of intent, not of behaviour.
-Pass everything.
+Disabled annotations no longer need a block of zeros plus `classFilter: {"refPath": ""}`:
+`annotations: null` works (re-tested on 5.8.3).
+
+**Workaround.** Pass every top-level parameter, with `null` for a `TOptional` you do not need.
 
 ### Capturing through a sequence camera, and the camera bodies that block it
 
@@ -174,14 +224,16 @@ spawned camera with `ObjectTools.set_properties`. Neither renders nor games ever
 bodies. Also move the playhead between captures; the first capture after a change can still be
 the previous frame.
 
-### `CaptureViewport` returns ~2.8 MB and the payload lands in a file
+### `CaptureViewport` returns ~2.8 MB of base64 inline
 
 **Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
-The base64 image does not come back inline - it spills into a `tool-results` file, and the
-client has to go read it. Worth knowing before you plan a loop around it.
+In my client (Claude Code) a response this large spills into a `tool-results` file, and the
+client has to go read it. That is the client, not the tool: the tool returns the image inline.
+Worth knowing before you plan a loop around it.
 
-The structure is `returnValue.image.data`, not `returnValue.data`. Sibling tools differ here:
+The structure is `returnValue.image.data` (`FViewportCapture.Image`, an `FToolsetImage` with
+`Data`), not `returnValue.data`. Sibling tools differ here:
 the Slate inspector's screenshot puts its payload directly at `returnValue.data`. Same idea,
 different shape, no warning.
 
@@ -204,13 +256,19 @@ The symptom reads as "my keys are in the wrong place", which sends you to fix th
 
 **Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
-`EditorAppToolset` can search console variables. It cannot set one, and there is no
-`ExecuteConsoleCommand` anywhere in the surface. For a system built to automate the editor,
+`EditorAppToolset` can search console variables with `SearchCVars`, which also returns each
+variable's current value. It cannot set one, and there is no `ExecuteConsoleCommand` anywhere in
+the surface. For a system built to automate the editor,
 the absence is louder than most bugs on this page.
 
 **Workaround.** Type into the editor's status-bar command box through the Slate inspector:
 `Type {ref, text, submit: true}`. Find the ref with `Observe("")` then `Snapshot` on the status
 bar menu - it is the textbox next to "Cmd". It works while PIE is running, too.
+
+With PIE maximized the status-bar box is not in the tree. Use the in-game console instead:
+`PressKey {key: "Tilde"}`, `Snapshot`, then `Type` into the focused textbox. The ref is
+single-use: after Enter the console closes, and the next open has a new ref (typing into the old
+one returns false). Check that a setting took with `SearchCVars`.
 
 ### Every `ProfileGPU` leaves a GPU Visualizer window open, and the next profile pays for it
 
@@ -224,19 +282,34 @@ next, so the numbers you are collecting are wrong in a way that looks plausible.
 **Workaround.** Close it through the Slate inspector - `Windows {action: "close", index}` -
 before every subsequent measurement.
 
+Or set `r.ProfileGPU.ShowUI 0` before profiling: the window is not created at all, and the
+breakdown still goes to the Output Log.
+
 ### `stat unit` typed from the status bar does not draw over PIE
 
 **Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
 
 The command goes through, the overlay never appears, and the screenshot comes back empty.
 
-**Workaround.** Use `ProfileGPU` instead: it writes a full pass breakdown into the Output Log,
+**Workaround.** Type it into the in-game console of PIE instead (`PressKey {key: "Tilde"}`, then
+`Snapshot`, then `Type` into the textbox, see the console-command note above): from there
+`stat fps` and `stat unit` draw normally. To read the numbers as text, use `ProfileGPU`: it
+writes a full pass breakdown into the Output Log,
 which you can read with the log toolset and a pattern filter. Slower to read, but it is text,
 and text is what an agent can actually use.
 
+### After a PIE restart the Slate inspector goes blind until you `Observe` again
+
+**Kind:** note · **Hit on:** 5.8.x (version not recorded) · **Workaround:** yes
+
+After PIE is restarted, `Snapshot` returns five or six widgets instead of hundreds.
+
+**Workaround.** Call `Observe` again. Observers tick about every 100 ms and are not free, so
+remove them with `Unobserve` when you are done.
+
 ### `CaptureViewport` renders no particles at all
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** no
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** none
 
 Neither Cascade nor Niagara shows up in a captured frame, while the same effect plays
 normally in the editor viewport. Verified by dropping a known-good Niagara system at the
@@ -244,43 +317,61 @@ same spot and capturing again - still empty. Everything else in the shot renders
 which is what makes this expensive: the capture looks like proof that the effect is
 broken, or that the asset pack does not work, and you start replacing assets.
 
+Control Rig poses can go missing the same way (cause not established). After keys were written
+to a rig, the first capture showed the pose and later ones did not, while `get_world_transform`
+returned the pose and the human saw it in the editor. `refresh_sequence`, `force_evaluate` and
+unlocking the camera did not help.
+
 **No workaround.** Any visual judgement about VFX has to be made by a human looking at
 the editor. Budget for that when planning an agent-driven FX pass.
+
+A candidate, not yet tried on particles or rig poses: `EditorAppToolset.CaptureEditorImage`
+captures the whole editor window, viewport included, as the human sees it (re-tested on 5.8.3).
 
 ---
 
 ## ObjectTools
 
-### A failed `set_properties` still wipes the properties it touched
+### A failed `set_properties` has already written every key it could
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
-I asked for `{skeleton, sampleData}` on a BlendSpace. `skeleton` is not editable, so the call
-failed - and took `sampleData` with it. The asset came back with `skeleton: None` and
-`sampleData: []`. Both fields I had asked about were now empty.
+> **Correction (source-checked, 5.8.3).** An earlier version of this note was titled "A failed
+> `set_properties` still wipes the properties it touched".
 
-So the call is not atomic and it does not roll back. A rejected write is not a no-op; it is a
-partial write you did not ask for.
+The call is not atomic. Keys are written one by one; a rejected key (read-only, unknown, blocked)
+is skipped, and the error listing the rejected keys is raised only at the end. So an error does
+not mean nothing happened: every writable key in the same call is already applied, and nothing
+rolls it back.
 
-**Workaround.** Probe unknown properties on a duplicate, never on the asset you care about.
-If the duplicate comes back gutted, you have lost nothing.
+`skeleton` on an animation asset is `VisibleAnywhere` and is never written by the tool. The
+`skeleton: None` / `sampleData: []` I originally saw on a BlendSpace most likely came from the
+batch-script rollback of 5.8.0 (the probe ran inside a ProgrammaticToolset script), not from
+`set_properties` itself. Not verified.
 
-### `set_properties` never fires `PostEditChangeProperty`
+**Workaround.** Send one unknown property per call, and probe unknown properties on a duplicate,
+never on the asset you care about.
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes (manual)
+### `set_properties` notifies the object, but not every listener rebuilds
 
-The value changes and the asset goes dirty, so every check you can make through MCP says the
-edit landed. What does not happen is the notification: systems that rebuild on
-`PostEditChangeProperty` - preview meshes, generated thumbnails, anything listening on a
-change delegate - never hear about it and keep serving stale state.
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes (manual)
 
-This is the known UE rule that a direct property write must be followed by an explicit
-notify. The difference here is that you cannot do the explicit part: the toolset gives you no
-way to construct the event.
+> **Correction (source-checked, 5.8.3, not re-tested live).** An earlier version of this entry
+> was titled "`set_properties` never fires `PostEditChangeProperty`" and said the toolset gives
+> you no way to construct the event. The 5.8.3 source contradicts it: every leaf write goes
+> through `PreEditChange` and `PostEditChangeChainProperty`, always, and the base `UObject`
+> forwards that to `PostEditChangeProperty` (`ToolsetLibraryImpl.cpp`, `PropertyAccessUtil.cpp`).
+> Epic's own tests assert it. The 5.8.0 source was not checked.
 
-**Workaround.** Touch the field once in the Details panel, or trigger the owning system's
-rebuild by hand. If a commandlet consumes the asset afterwards, save it to disk first - a
-separate process does not see in-memory edits and does not inherit console variables.
+What I saw on 5.8.0 was a system that did not rebuild after the edit. If that happens, check what
+its listener filters on. Mesh Partition, for one, broadcasts `OnDefinitionModified` from
+`PostEditChangeProperty`, but forces a rebuild only for a whitelist of properties
+(`MeshPartitionDefinition.cpp`); for the rest you need an explicit rebuild, through the Details
+panel too. Why the rebuild did not happen in my case is not explained by the source.
+
+**Workaround.** Trigger the owning system's rebuild by hand. If a commandlet consumes the asset
+afterwards, save it to disk first - a separate process does not see in-memory edits and does not
+inherit console variables.
 
 ### An empty result is indistinguishable from "wrong context"
 
@@ -320,7 +411,7 @@ reflection. Absence from the reflection surface does not mean absence from the o
 
 ### `set_properties` refuses to grow an array and edit its elements in one call
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** yes
 
 Send an array that is both longer than the stored one and different in its existing entries, and
 the whole property is rejected: `ArrayAdd: elements changed alongside the size change; insertion
@@ -338,8 +429,9 @@ counts as an edit and brings the refusal back.
 
 **Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
 
-A script fails mid-run. The registry rolls the transaction back. The rollback tries to
-rename a preview object on top of an existing one, and the editor dies:
+A script fails mid-run. The ProgrammaticToolset rolls its transaction back
+(`ToolsetLibrary.undo_transaction`, a wrapper over `GEditor->UndoTransaction`). The rollback
+tries to rename a preview object on top of an existing one, and the editor dies:
 
 ```
 Fatal error: Renaming an object (MaterialEditorOnlyData /Engine/Transient.PreviewMaterial_88:...)
@@ -365,6 +457,14 @@ is not a harmless "object not found", it is the entrance to this crash.
 **Why it matters.** The cost of a script error is not the error. It is everything the editor
 was holding.
 
+**5.8.3 (read from source, re-tested live):** `execute_tool_script` now runs through the plain
+`_ScriptRunner` (`programmatic.py:941`); the transactional runner is still in the file but
+unused. There is no transaction any more: in a live re-test a script created an asset, wrote an
+entry into it, then failed on a wrong argument name, and both the asset and the entry stayed. The
+rollback that crashed the editor has no path to fire (not re-tested with an asset open in its own
+window). Resolving paths with `find_assets` first still pays: a bad refPath fails the whole
+script and leaves it half-applied.
+
 ### An error inside a script rolls back every mutation the script already made
 
 **Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
@@ -376,34 +476,65 @@ disappear because the next call used an argument that does not exist.
 **Workaround.** Validate argument names before batching. A single wrong name costs the whole
 run, not just its own step - and if the asset is open in its editor, see the entry above.
 
-### Subobject paths containing a space work in direct calls and break inside scripts
+**5.8.3 (re-tested live):** nothing rolls back any more. A script that created an asset and wrote
+an entry, then failed on a wrong argument name, left both in place (`execute_tool_script` runs
+the plain `_ScriptRunner`, `programmatic.py:941`). A failed script is half-applied: check the
+state before you rerun it, or the earlier calls run twice.
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+### An unset object reference comes back as the string `"None"`
 
-A component named with a space in it - `My Component` - resolves fine through a direct
-`call_tool`. Put the same path inside a batch script and `get_properties` returns `None` or
-throws.
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
-**Workaround.** Handle those objects with direct calls and keep them out of batches. Or rename
-the component, if it is yours.
+> **Correction (re-tested).** An earlier version of this entry was titled "Subobject paths
+> containing a space work in direct calls and break inside scripts". That was a wrong
+> attribution: the failing call received `"None"`, not the path with the space. Re-tested on
+> 5.8.3: a subobject path with a space resolved both in a direct call and inside
+> `execute_tool_script`.
+
+`get_properties` returns an empty object property as the string `"None"`, not JSON null. In a
+script `d["prop"]["refPath"]` then raises `TypeError: string indices must be integers`, and
+passing the value on as a refPath fails with `None is not valid value for property 'instance'`.
+Subobject paths with spaces resolve the same way in direct calls and in scripts.
+
+**Workaround.** Check `isinstance(v, dict)` before reading `refPath`.
 
 ### The dictionaries are `_StrictDict`: `.get(key, default)` raises
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
-Script-side dictionaries look like Python dicts until you call `.get()` with a fallback, which
-raises `TypeError: does not support a default value`. The defensive pattern everyone writes by
-reflex is the one that breaks - and it breaks the whole script, undoing everything before it.
+Dicts returned by `execute_tool`, and every dict nested in them, are `_StrictDict`; your own
+`json.loads` gives plain dicts. `.get(key, default)` raises `TypeError: does not support a
+default value` even when the key exists, and a bare `.get(key)` raises `KeyError` on a missing
+key, so `.get` buys no safety. The defensive pattern everyone writes by reflex is the one that
+breaks, and uncaught it aborts the whole script (on 5.8.0 that also undid everything before it;
+on 5.8.3 it stays applied).
 
 **Workaround.** `if key in d: d[key]`. Never `.get`.
+
+### `run()` must return a dict with string keys, and the check fires after the work is done
+
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** yes
+
+`run()` returning `{0: ..., 80: ...}` fails with `run() must return a dict[str, Any], returned
+dict with non-string keys.` A list instead of a dict fails the same check. Only top-level keys
+are checked: nested int keys pass, and `json.dumps` quietly turns them into strings.
+
+The check runs after `run()` has returned, so every call the script made has already happened.
+My case only read data. By the 5.8.3 source (`_ScriptRunner`, no transaction) and the live
+re-test above, nothing rolls those calls back, so rerunning the whole script repeats any edits
+in it.
+
+**Workaround.** Use `str(frame)` for keys. Fix the keys and rerun only the reading part.
 
 ### `get_properties` with a property the node's class does not have kills the entire script
 
 **Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
 
 Ask for `MaterialFunction` on a node that is not a `MaterialFunctionCall` and the whole
-`execute_tool_script` dies. `try/except` does not save you - the error comes out of
-`execute_tool`, not out of Python.
+`execute_tool_script` dies. `try/except` does not save you, not even `except BaseException`
+(re-tested live on 5.8.3): the script stops at the failing call and the line after `except`
+never runs. Only a schema error, such as a wrong argument name, comes back as a `RuntimeError`
+that `try/except` catches.
 
 **Workaround.** Request properties strictly by node type: `MaterialFunction` only on
 `MaterialFunctionCall`, `ParameterName` only on `*Parameter` nodes, `Name` only on
@@ -415,10 +546,13 @@ Ask for `MaterialFunction` on a node that is not a `MaterialFunctionCall` and th
 
 ### `create_level_sequence` silently destroys an existing asset at the same path
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
 Point it at a package path that already holds a Level Sequence and it does not fail, warn,
 or ask. It replaces. The old sequence - tracks, keys, bindings - is gone.
+
+Documented in the tool's own docstring in 5.8.3 (it deletes to avoid a modal overwrite dialog),
+so `describe_toolset` tells you; the call itself still gives no warning.
 
 **Workaround.** `find_assets` on the target path before every create. Treat the call as
 destructive, because it is.
@@ -434,39 +568,49 @@ frame 0.
 The symptom is "the animation on this property does nothing", which sends you looking at the
 keys - and the keys are fine.
 
+Cause (source-checked, 5.8.3): a new section defaults to `[0, 0]` (`MovieSceneSection.cpp`). The
+Sequencer editor makes new sections infinite when Infinite Key Areas is on, which it is by
+default, but the scripted `add_section` does not apply that setting.
+
 **Workaround.** `set_section_range(0, end)` immediately after every `add_section`. This is the
 narrow, creation-time case of the wider rule that section ranges are independent of the
 sequence playback range - see
 [ue5-mcp §5.15](https://github.com/ibrews/ue5-mcp) for the general version.
 
-### Property tracks silently ignore nested struct fields
+The other option is `set_section_start_bounded(false)` / `set_section_end_bounded(false)`, but
+`get_section_range` throws on an unbounded section (see the entry on unbounded sections below).
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+### A nested struct path did not animate once; cause not established
 
-`set_property_name_and_path` with a path into a struct - `Filmback.SensorWidth` - creates the
-track, accepts the keys, and never applies the value. No error anywhere in the chain.
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
 
-Flat properties work (`CurrentFocalLength`, `bConstrainAspectRatio`), and so do paths the engine
-itself registers (`FocusSettings.ManualFocusDistance`). Arbitrary struct paths do not.
+> **Correction (source-checked, 5.8.3).** An earlier version of this entry was titled "Property
+> tracks silently ignore nested struct fields". The engine does resolve nested property paths
+> (`MovieScenePropertyRegistry.cpp`), the tool's docstring suggests the dotted notation, and the
+> path that worked, `FocusSettings.ManualFocusDistance`, is itself nested. The likely cause is
+> the `0..0` section range from the entry above.
 
-**Workaround.** Set whole structs through `set_properties` on the spawnable instance instead of
-animating them. If you need the struct field to change over time, find the engine-registered
-path for it or animate something else.
+`set_property_name_and_path` with a path into a struct (`Filmback.SensorWidth`) created the
+track, accepted the keys, and never applied the value. No error anywhere in the chain.
+
+**Workaround.** Check the section range first. To set a whole struct once, use `set_properties`
+on the spawnable instance instead of animating it.
 
 ### `create_camera` already made the property tracks, and a second one averages the values
 
 **Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
 
 `create_camera` quietly creates the standard property tracks on the child CameraComponent
-binding - Current Focal Length, Manual Focus Distance, Current Aperture - with empty sections.
+binding (Current Focal Length, Manual Focus Distance, Current Aperture), keyed at the playhead
+frame with the component's current values (`LevelSequenceEditorSubsystem.cpp`).
 Add your own track for the same property and the engine blends two sources: the value you get
 is the arithmetic mean of your keys and the original.
 
 I asked for a focus distance of 131 cm and got 50065. That number makes no sense until you know
 there are two tracks.
 
-The sections are not always empty. A camera created with the playhead on frame 45 came with keys
-on frame 45: 35 mm, f/2.8, focus 100000. The symptom then is different - a soft image, and any
+Because those keys sit at the playhead, a camera created with the playhead on frame 45 came with
+keys on frame 45: 35 mm, f/2.8, focus 100000. That gives a second symptom: a soft image, and any
 value typed into the Details panel snaps back as soon as the sequence plays, because the track
 wins.
 
@@ -481,10 +625,10 @@ lens by changing the key, not the component property.
 The transform section from `create_camera` and every spawn section are created without bounds.
 That is correct - you can write keys outside a range that does not exist. But
 `get_section_range` and `get_section_properties` on such a section raise "Section does not have
-a start frame", and inside a batch script that single raise rolls back everything the script has
-done.
+a start frame", and inside a batch script that single raise aborts the script (on 5.8.0 it also
+rolled back everything the script had done).
 
-**Workaround.** Do not call range queries on sections you did not explicitly bound. `try` does
+**Workaround.** Check `has_section_start_frame` / `has_section_end_frame` first. `try` does
 not help here - the error comes from the tool layer, not from your script.
 
 ### Changing display rate renumbers every existing key
@@ -495,15 +639,16 @@ Switch a sequence from 30 to 120 fps and frame 60 becomes frame 240. Absolute ti
 which is the point - but every frame number you wrote down is now wrong, and code that reasons
 about "the key at frame 60" quietly targets a quarter of the way through.
 
-Related: the Camera Cuts section is half-open. Its end has to sit at `last_key + 1`, or the final
-frame is never shown through the camera.
+Related: `set_section_range` makes every section half-open, `[start, end)`
+(`MovieSceneSectionExtensions.cpp`). On a Camera Cuts section that means the end has to sit at
+`last_key + 1`, or the final frame is never shown through the camera.
 
 **Workaround.** After a rate change, stop trusting your notes: read the channel with `get_keys`,
 clear it, and write again from the new numbers.
 
 ### A `NaN` view range makes the Sequencer timeline disappear
 
-**Kind:** bug · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** yes
 
 The time ruler and every key vanish from the Sequencer panel while the tracks themselves
 are intact. Track filters are empty, nothing is muted, soloed, locked or deactivated, so
@@ -518,7 +663,7 @@ the first place was not established.
 
 ### A material parameter track cannot be built, and neither can a component binding
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** partial
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** partial
 
 Adding the track itself succeeds and gets you nothing: `MovieSceneComponentMaterialTrack` decides
 which material slot it drives through `MaterialInfo`, a `UPROPERTY()` with no `EditAnywhere`, so
@@ -538,7 +683,7 @@ trying to automate past it.
 
 ### `set_camera_cut_binding` fails on every call
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** yes
 
 The tool builds `unreal.Guid(camera_binding_id)` from the string you pass, and the Python `Guid`
 constructor does not take a string. Every call ends in
@@ -552,7 +697,7 @@ confirm.
 
 ### The engine's FK Control Rig cannot be added to a binding
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** partial
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** partial
 
 `find_or_create_track` and `bake_to_control_rig` take a path to a Control Rig asset and call
 `get_control_rig_class()` on it. The built-in `FKControlRig` is a native class with no asset, so
@@ -571,19 +716,22 @@ enough to run your own FK and two-bone IK outside the editor and write only loca
 
 ### `set_world_transform` on an FK control puts the bone somewhere else
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** yes
 
 `SequencerControlRigTools.set_world_transform` on an FK Control Rig control, asked to keep the
 bone where it was and turn it to (63.4, −180, 113.4), read back as (63.4, 90, 113.4) with the bone
-moved 112 cm away. The cause is not established. The tool builds `unreal.Transform(rotation=[pitch,
-yaw, roll])`, so component order is the first suspect, but order alone does not explain the moved
-position.
+moved 112 cm away. The fault is in the engine, not in the tool (source-checked, 5.8.3).
+`ControlRigSequencerEditorLibrary::SetControlRigWorldTransform` converts the world transform to
+rig space relative to the actor's root component (the capsule), while `GetControlRigWorldTransform`
+converts back through the bound skeletal mesh component. On a Character the mesh is offset from
+the capsule (usually yaw −90 and Z down), so every write lands shifted by that offset: here
+exactly −90 in yaw, plus the moved position. Any control is affected, not only FK, whenever the
+mesh is not at the actor root. The tool's `rotation=[pitch, yaw, roll]` is fine: a list converts
+to a Rotator in property order (Pitch, Yaw, Roll).
 
 **Workaround.** Do not use it on FK controls. Compute the local delta yourself (see the entry
 above) and write it with `set_euler_transform`, then check the result with `get_world_transform`,
 which reads correctly.
-
----
 
 ### Reading an actor's path frame by frame: `get_actor_transform_at_frame`, not `bake_channel_keys`
 
@@ -592,11 +740,19 @@ which reads correctly.
 To build a camera that follows a keyframed actor you need the actor's evaluated position on every
 frame, not its keys. `SequencerKeyframingTools.bake_channel_keys` looks like the tool for it and is
 not: over a 346-frame range it returned a single number (it did not alter the channel's keys).
+Why (source-checked, 5.8.3): it fills a `SequencerScriptingRange` with
+`set_start_frame`/`set_end_frame`, and that struct's internal rate is fixed at 60000 fps, so the
+frames are read as ticks (a range of a few milliseconds, less than one frame) and one value comes
+back. Untested workaround: pass frames multiplied by 60000 / display rate.
 
 **Workaround.** `SequencerControlRigTools.get_actor_transform_at_frame {sequence, actor_name, frame}`
 works for any actor in the sequence, no rig required, and returns the value the sequence actually
-evaluates, interpolation included. `actor_name` is the short name of the spawned instance from
-`get_bound_objects`. It is slow, roughly a second per call: a hundred samples plus the key writes in
+evaluates, interpolation included. `actor_name` is matched as a substring of the label or object
+name across all actors in the editor world, and the first match wins. A full name is no
+guarantee: `CineCameraActor2` also matches `CineCameraActor2_5`. Take the short name of the
+spawned instance from `get_bound_objects`, and check with `find_actors` that it is not part of
+another actor's name or label. It returns the root component's location and rotation, no scale.
+It is slow, roughly a second per call: a hundred samples plus the key writes in
 one `ProgrammaticToolset` script ran past the client's 120 s and went to the background, so split
 large jobs.
 
@@ -605,9 +761,11 @@ large jobs.
 **Kind:** limitation · **Hit on:** 5.8.3 · **Workaround:** yes
 
 `SceneTools.trace_world {start, end}` returns only the distance to the first hit, or `null`. No hit
-point, no actor. A start point inside collision returns 0. The trap: sampling a Sequencer actor's
-position moves the playhead, so the spawnable now stands exactly where you are about to trace from,
-and every ray hits it. A clearance check along a flight path came back as all zeros, including in
+point, no actor. A start point inside collision returns 0. The ray uses the Visibility channel
+with complex collision, and during PIE it traces the PIE world (`scene.py`). The trap: sampling a
+Sequencer actor's position evaluates the sequence at that frame and leaves the world there (the
+playhead itself does not move), so the spawnable now stands exactly where you are about to trace
+from, and every ray hits it. A clearance check along a flight path came back as all zeros, including in
 open air.
 
 **Workaround.** Collect the positions first, then move the playhead to a frame where the spawnable
@@ -620,8 +778,9 @@ does not exist (a `false` key on its Spawn track), call `force_evaluate`, and on
 On a skeletal animation section the rate is not a plain float:
 `Params.playRate = "EMovieSceneTimeWarpType::FixedPlayRate(PlayRate=0.780000)"`, with `bReverse` in the
 same struct. Read `Params` with `get_properties`, change the field, write the whole struct back with
-`set_properties`. The engine then stretches the section to fit the clip at the new rate (a 563-660
-section became 563-687), so set the range again afterwards. Keep the clip at least as long as the
+`set_properties`. The engine then scales the section's current length by old rate / new rate,
+whatever the clip length (563-660 became 563-687 at 0.78: 97 / 0.78 ≈ 124), so set the range
+again afterwards. Keep the clip at least as long as the
 section, or it restarts at the end and pops.
 
 ### `set_section_ease_in` / `set_section_ease_out` take ticks, not frames
@@ -731,17 +890,24 @@ the last cinematic camera converge on the gameplay camera itself (same FOV, same
 the blend ends, and give the pawn the camera's yaw on the last frame, or the pawn turns towards
 the control rotation when input comes back.
 
+---
+
 ## Niagara
 
 ### `Export Particle Data To Blueprint` delivers nothing in an editor world
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** partial
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** partial
 
-The data interface does not call your handler directly. Particles go into a queue, and
-`PerInstanceTickPostSimulate` hands that queue to `FNiagaraWorldManager::EnqueueGlobalDeferredCallback`,
-which is drained on a game world tick. In the editor it is never drained, so the handler is not
-called once - not while scrubbing a sequence that drives the system in Desired Age mode, and not
-with the system looping and auto-activating in the level viewport.
+In an editor world the handler is not called once: not while scrubbing a sequence that drives the
+system in Desired Age mode, and not with the system looping and auto-activating in the level
+viewport.
+
+> **Correction (source-checked, 5.8.3).** An earlier version of this note said the callback queue
+> (`FNiagaraWorldManager::EnqueueGlobalDeferredCallback`) is drained only on a game world tick.
+> The 5.8.3 source drains the shared `GlobalDeferredCallbacks` queue in the editor too
+> (`NiagaraWorldManager.cpp`). A likely cause is that `AActor::ProcessEvent` does not run
+> Blueprint events on actors of an editor world unless they are `CallInEditor` (`Actor.cpp`).
+> Not verified; a C++ handler may well fire in the editor.
 
 What makes this expensive is how healthy everything looks while it happens. The stack reports zero
 errors, the user parameter resolves, the handler object is bound on the component, and the log is
@@ -755,17 +921,21 @@ play sessions.
 
 ## PCGToolset
 
-### ☠️ `GetNodeDataView` hangs the editor, and graph size is what decides it
+### ☠️ `GetNodeDataView` hangs the editor: node count times point count decides it
 
 **Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** none
 
-The tool turns on graph-level data inspection. From then on every generation retains the data
-of every node - hundreds of thousands of points across dozens of nodes, gigabytes of it - and
-the editor runs out of memory. Two calls in parallel freeze it outright.
+Two costs. The first call turns inspection on for the component, and it never turns it off: from
+then on every generation keeps the input and output data of every executed node (hundreds of
+thousands of points across dozens of nodes, gigabytes of it), and the editor runs out of memory.
+On top of that each call serializes the queried pin's whole output to JSON; `startIndex` /
+`endIndex` only trim it after a full serialize and re-parse, and `attributeName` is the only
+argument that shrinks the work. Two calls in parallel freeze it outright.
 
 I first wrote this down as "only use it on a small test volume". That was wrong. On a graph of
 about seventy nodes, a second call right after a generation froze the editor hard enough to
-need a kill - **on a 40 × 40 m volume**. The volume is not what costs you. The graph is.
+need a kill - **on a 40 × 40 m volume**. A small volume does not save you: the retained data is
+per node.
 
 Inspection does not turn back off. Only a restart clears it.
 
@@ -774,42 +944,51 @@ pattern filter, and with your eyes.
 
 ### The toolset is not called what the catalogue says
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
 
 Its full name is `PCGToolset.PCGToolset`, and the spatial one is `PCGToolset.PCGSpatialToolset`.
 Call either by the short name and you get "Toolset not found", which reads like the plugin is
-missing rather than like a naming quirk.
+missing rather than like a naming quirk. Every toolset is registered as `<Module>.<Class>`, so
+this is the rule, not a PCG quirk.
 
 ### `ListNativeNodes` hides plugin nodes, `bCommonOnly: false` or not
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
 The flag defaults to true, so the first listing is short. Setting it false makes the list longer -
 and still without any node a plugin contributed. Those nodes exist, they are just not
 discoverable through the tool that exists to discover nodes.
 
+The cause is a filter in the tool (source-checked, 5.8.3): its node map keeps only classes from
+the `/Script/PCG` package, so nodes from any other module, PCG interop modules included, are
+dropped. `AddNode` looks types up in the same map, so it rejects those nodes too ("Node type …
+does not exist").
+
 **Workaround.** Find their classes by reflection (`search_subclasses` on the PCG settings base),
 and build with the plugin's own primitive subgraphs through `AddSubgraphNode` rather than with
 native nodes.
 
-### Adding a native node is `AddNode`, and all six arguments are required
+### Adding a native node is `AddNode`, and six of its eight arguments are required
 
 **Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
-There is no `AddNativeNode` - that name returns "Unknown tool". The real one is `AddNode`, and it
-wants `graph`, `nativeNodeType`, `nodeName`, `jsonParams`, `nodeTitle`, `nodeComment`, every one
-of them, every time. `nativeNodeType` is the display string from `ListNativeNodes`, spaces
+There is no `AddNativeNode` - that name returns "Unknown tool". The real one is `AddNode`, and the
+first six of its eight arguments are required: `graph`, `nativeNodeType`, `nodeName`,
+`jsonParams`, `nodeTitle`, `nodeComment`, every one of them, every time. `xPositionIdx` and
+`yPositionIdx` (default 0) are optional. The C++ declares empty-string defaults for
+`jsonParams`, `nodeTitle` and `nodeComment` too, but those three are required in practice (see
+"Optional arguments that are not optional"). `nativeNodeType` is the display string from `ListNativeNodes`, spaces
 included: `"Spatial Noise"`, `"Density Filter"`, `"Get Spline Data"`.
 
-### `UpdateNode` demands `nodeTitle` even when you are only changing parameters
+### `UpdateNode` demands both `jsonParams` and `nodeTitle`, even when you change only one
 
 **Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
 
-Leave it out and the call fails; pass `""` and the existing title is kept. So the argument is
+Leave either out and the call fails; pass `""` and what is there is kept. So the argument is
 required in order to be ignored.
 
-Inside a batch script this is not a small annoyance - the failure rolls back every mutation the
-script has already made.
+Inside a batch script this is not a small annoyance: unless caught, the failure aborts the run
+(on 5.8.0 it also rolled back every earlier mutation).
 
 ### `subGraphForNode` needs the object path with the name twice
 
@@ -822,17 +1001,21 @@ wants `/Plugin/Primitives/Filter/Filter_Foo.Filter_Foo`.
 This is the standard UE object-path convention rather than a bug, but it catches everyone,
 because the tool that hands you the path hands you the form the next tool refuses.
 
-### `ConnectNodePins` silently inserts conversion nodes
+**Workaround.** `ListAvailableSubgraphs` returns primitives already in the `/Path/X.X` form. It
+only lists the folders set in PCG Toolset → Subgraph Directories (by default
+`/PCGPrimitives/Primitives`), and skips paths with `Subgraphs/`, `Shared/` or `_Template_`.
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+### `ConnectNodePins` inserts conversion nodes, and only the return value says so
 
-Connect two nodes whose data types do not line up and the tool inserts converters between them -
-`FilterDataByType` and friends - without telling you. Your graph now has nodes you did not add,
-and there is no direct edge between the two nodes you "connected", so a later
-`DisconnectNodePins` fails.
+**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
 
-The return value is the list of inserted nodes; an empty array means nothing was inserted. That
-is the only notice you get.
+Connect two nodes whose data types do not line up and the tool inserts converters between them
+(`FilterDataByType` and friends). Your graph now has nodes you did not add, and there is no
+direct edge between the two nodes you "connected", so a later `DisconnectNodePins` fails.
+
+The return value is the list of inserted nodes; an empty array means nothing was inserted. This
+is by design: the tool's own docstring says it returns the conversion/filter nodes it added. It
+is still the only notice you get.
 
 **Workaround.** Before rewiring anything, read the actual edges from `GetGraphStructure` instead
 of assuming your own connection exists.
@@ -850,7 +1033,8 @@ identical in a dump.
 
 **Workaround.** Read the schema with `GetNativeNodeSchema` when you need to know what a missing
 key means. And guard every lookup - the dictionaries here raise on a missing key rather than
-returning a default, and inside a script that raise costs you the whole run.
+returning a default, and inside a script an uncaught raise aborts the run (on 5.8.0 it also
+rolled back every earlier call).
 
 ### "Failed to call Execute" means busy, not broken
 
@@ -865,25 +1049,37 @@ went through the tool without a single timeout. The condition is simply a pause 
 seconds between runs. The fully autonomous loop - edit the graph, execute, look at the result -
 does work.
 
-**Workaround.** Wait and retry rather than debugging the graph.
+The mechanism (source-checked, 5.8.3; flags read live): after a graph edit the component
+regenerates by itself (`bRegenerateInEditor`, on by default), and `ExecuteGraphInstance` is
+refused while that generation runs. `bGenerationInProgress` and `bGenerated` can be read with
+`get_properties` on the PCG component, but the flag does not cover the gap between scheduling and
+start.
+
+**Workaround.** Poll `bGenerationInProgress` instead of waiting blind, and still retry on refusal
+rather than debugging the graph.
 
 ---
 
 ## MaterialTools
 
-### `get_expression_inputs` reports the wrong `output_name` on multi-output nodes
+### `get_expression_inputs` repeats one `output_name` when a node is fed twice by the same source
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes (manual)
 
-When the source node has several outputs - a break-attributes node, for instance - every
-connection comes back naming the same output. In my case all of them claimed to come from
-"Specular". The `input_name` side is correct; it is only the output that lies.
+When one source node is wired into several inputs of the same node, every one of those inputs
+reports the output name of the first such pin. The engine function behind it,
+`GetInputNodeOutputNameForMaterialExpression`, returns the output of the first input that matches
+the source (`MaterialEditingLibrary.cpp`, checked on 5.8.3). It is wrong whenever those pins use
+different outputs, e.g. Break -> Make MaterialAttributes: in my case all of them claimed
+"Specular". A multi-output source feeding a single pin reports correctly. `input_name` is always
+right.
 
 Which means you cannot reconstruct a graph's topology from this call alone, and if you do, the
 result looks coherent and is wrong.
 
-**Workaround.** Cross-check with the node's real output names before believing any edge that
-starts at a multi-output node.
+**Workaround.** Trust `output_name` only when the source feeds one pin of that node. Otherwise
+check the graph in the material editor: the toolset has no other route, because those inputs are
+`UPROPERTY()` without an edit specifier and `get_properties` does not return them.
 
 ### `layout_expressions` re-lays out the entire graph, not the part you touched
 
@@ -914,7 +1110,7 @@ traversal knowing it has holes.
 
 ### Rebuilding a Material Function silently disconnects every caller
 
-**Kind:** bug · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** yes
 
 Delete all expressions inside a Material Function and build it again - same name, same
 inputs, same outputs - and every `MaterialFunctionCall` in the materials that use it
@@ -932,7 +1128,7 @@ recreate one that has callers. After any function edit, verify with
 
 ### The `Power` node input is called `Exp`, not `Exponent`
 
-**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
 `connect_expressions` fails outright when you pass `Exponent`, which is what the node
 shows in the editor.
@@ -942,7 +1138,7 @@ editor label. Cheap habit, and it covers the whole node library, not just this o
 
 ### ☠️ Adding an input to a material function with callers crashes the editor
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** yes
 
 `Assertion failed: MatchingInput [File: .../MaterialEditorUtilities.cpp] [Line: 635]`, and
 everything unsaved goes with it. The new input changes the function signature while a
@@ -1002,9 +1198,11 @@ animation a sample points at leaves the grid valid.
 
 **Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
 
-The second argument of the underlying call is `bAddSocketToSkeleton`, and it is false. So the
-socket exists on that one mesh, and sibling meshes sharing the skeleton never see it. Verified
-the unhappy way: a socket added to one variant of a character was simply absent on the other.
+The second argument of the underlying call is `bAddToSkeleton`, and it is false. So the
+socket exists on that one mesh, and sibling meshes sharing the skeleton never see it. Verified on
+disk: the socket name is present in the mesh `.uasset` and absent from its skeleton `.uasset`. Do
+not check through `get_socket_names`: it returns the mesh's sockets and its skeleton's sockets in
+one list.
 
 This is convenient when you want a targeted change that does not touch a purchased pack - and
 surprising if you expected sockets to live where the editor's own UI suggests they live.
@@ -1013,14 +1211,20 @@ surprising if you expected sockets to live where the editor's own UI suggests th
 
 ## PhysicsAssetToolset
 
-### Constraint reference frames are unreachable - for reading and for writing
+### Constraint reference frames are not in `PhysicsAssetToolset`
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes (manual)
+**Kind:** limitation · **Hit on:** 5.8.0, re-tested on 5.8.3 · **Workaround:** yes (manual)
+
+> **Correction (re-tested).** An earlier version of this note was titled "Constraint reference
+> frames are unreachable - for reading and for writing" and said `ObjectTools` cannot walk into
+> subobjects. Reading works: `get_properties` on `<PhysicsAsset>:PhysicsConstraintTemplate_0`
+> with `["DefaultInstance"]` returns the whole constraint, including `constraintBone1`/`2`,
+> `pos1`/`priAxis1`/`secAxis1`, `pos2`/`priAxis2`/`secAxis2`, limits and drives (5.8.3). Writing
+> the frames that way was not tested.
 
 `PhysicsAssetToolset` exposes limits (`SetConstraintLimits`), masses, shapes and modes.
-It exposes nothing about Parent or Child Rotation. Reflection is closed too:
-`get_properties(PhysicsAsset, ["ConstraintSetup"])` answers "could not be read", and
-`ObjectTools` has no way to walk into subobjects.
+It exposes nothing about Parent or Child Rotation. `get_properties(PhysicsAsset,
+["ConstraintSetup"])` on the asset itself answers "could not be read".
 
 This is worse than it sounds. Porting constraint limits from a finished character to a new
 one carries **how far** a joint bends, but not **which way**. On an asset with auto-generated
@@ -1048,6 +1252,20 @@ when it was not.
 
 **Workaround.** Compare full strings. It is a stupid rule and it costs nothing.
 
+### `CreateFromMesh` builds an asset with self-collision off for every body pair
+
+**Kind:** limitation · **Hit on:** 5.8.x (version not recorded), source-checked on 5.8.3 · **Workaround:** yes (manual)
+
+`PhysicsAssetToolset.CreateFromMesh` uses the default `FPhysAssetCreateParams`, where
+`bDisableCollisionsByDefault` is true (`PhysicsAssetUtils.h`): every new body has its collision
+with every other body disabled. In Simulate the limbs pass through each other, which looks like
+bad limits. The New Physics Asset dialog in the editor has the same default, but there you can
+untick it; the tool has no parameter for it, and no operation on collision pairs.
+
+**Workaround.** In the Physics Asset Editor: select all bodies → Enable Collision (all pairs),
+then select all constraints → Details → Constraint Behavior → Disable Collision, which turns off
+the pairs that share a joint.
+
 ---
 
 ## Plugins, search and odds
@@ -1059,6 +1277,10 @@ when it was not.
 It returns null, the plugin appears enabled, and after a restart it is disabled again. Nothing
 was written to the `.uproject`.
 
+The tool changes the in-memory project descriptor and only marks it dirty; it never calls
+`SaveCurrentProjectToDisk`, which the Plugins browser does right after the same
+`SetPluginEnabled` call (source-checked, 5.8.3).
+
 **Workaround.** Edit the `.uproject` yourself and restart the editor.
 
 ### The semantic search toolset ships non-functional
@@ -1067,8 +1289,10 @@ was written to the `.uproject`.
 
 `SemanticSearchToolset` is wired to OpenAI - captions and embeddings both. With no key it answers
 401, and the search index on disk is empty, so the toolset that looks like the answer to "find me
-the thing" is the one tool guaranteed not to work out of the box. Making it work costs money at a
-third party.
+the thing" is the one tool guaranteed not to work out of the box. It needs an OpenAI-compatible
+endpoint. The settings say a local server (Ollama, LiteLLM) will do, and an empty key only logs a
+warning, but captioning needs a vision-capable model and the `dimensions` parameter is always
+sent. Untested.
 
 **Workaround.** `find_assets`, gameplay tags, and plain text search over the project. They are
 enough more often than you would expect.
@@ -1077,9 +1301,10 @@ enough more often than you would expect.
 
 **Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
 
-The obvious call does not exist. What exists: `get_lod_count`, `get_triangle_count(mesh, lod)`,
+The obvious call does not exist. Closest substitutes: `get_lod_count`,
+`get_triangle_count(mesh, lod)`, `get_vertex_count(mesh, lod_index)`, `get_bounds(mesh)`,
 `get_lod_thresholds`, `get_material_slots`, `get_material`, `is_nanite_enabled`,
-`set_nanite_enabled`. The mesh argument is `mesh`, not `static_mesh`, and `minLOD` is not readable
+`set_nanite_enabled`. On a Nanite mesh the triangle and vertex counts come from the fallback LOD. The mesh argument is `mesh`, not `static_mesh`, and `minLOD` is not readable
 through reflection at all.
 
 Instance count on an instanced static mesh is the length of its per-instance data array - there is
@@ -1104,6 +1329,18 @@ in about seven seconds.
 **Workaround.** Ask for approval up front for the interactive parts, rather than discovering the
 refusal in the middle of a sequence. And note that interactive tools take over the human's editor
 while they run - always worth announcing before you do it.
+
+### An editor without OS focus throttles to ~3 FPS, and profiles taken then are garbage
+
+**Kind:** note · **Hit on:** 5.8.x (version not recorded) · **Workaround:** yes
+
+With "Use Less CPU when in Background" on, an editor that is not the focused window drops to
+frames of about 333 ms. A profile taken while the human is in another window (answering the
+agent, for one) measures the throttle, not the game: the marker is a frame or render-thread time
+of about 333 ms with an almost empty tree under it.
+
+**Workaround.** Agree with the human to keep the editor focused for the N seconds of a
+measurement.
 
 ---
 
@@ -1133,7 +1370,7 @@ JSON. The tools work, but several of them fail in ways that point at the wrong c
 
 ### Boolean property names drop the `b` prefix in editor Python
 
-**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
 A `bool` UPROPERTY declared as `bIsPlayer` is reachable from Python as `is_player`, not as
 `b_is_player`. The symptom misleads: the error reads `Failed to find property 'b_is_player' for
@@ -1145,19 +1382,20 @@ converts the way you would expect.
 
 ### `set_properties` takes `values`, `get_properties` takes `properties`
 
-**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
 Two neighbouring tools in the same toolset disagree about the name of the argument that carries
 the property payload. The schema comes back in the error text, so a direct call self-corrects in
-one round trip - but inside a batching script the failed call rolls the whole script back, and
-everything it had already done is undone with it.
+one round trip. Inside a batching script the failed call aborts the script unless you catch the
+error; on 5.8.0 it also rolled the whole script back. On 5.8.3 nothing rolls back (re-tested
+live), so the calls before it stay applied and a rerun repeats them.
 
 **Workaround.** Validate argument names with a single direct call before putting a tool into a
 batch.
 
 ### `list_properties` returns a JSON string, not a list
 
-**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
 The return value is a string containing a JSON object. `len()` on it gives the character count -
 9325 for a widget - which reads like a plausible property count, and filtering it as if it were a
@@ -1167,20 +1405,25 @@ list silently finds nothing. Property names inside are camelCase, including odd 
 **Workaround.** Parse it before using it, and print a couple of keys the first time you touch an
 unfamiliar object.
 
-### `write_graph_dsl` compiles the Blueprint before it writes
+### `write_graph_dsl` compiles the whole Blueprint after writing, and reports failure even though the write landed
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** yes
 
-Which means you cannot use it to repair a graph that does not currently compile: to replace the
-broken graph you must first make it compile. The failure surfaces as a compile error listing
-problems in the graph you were about to delete.
+> **Correction (source-checked, 5.8.3).** An earlier version of this note said the tool compiles
+> the Blueprint before it writes. The 5.8.3 source has it the other way round.
 
-**Workaround.** `find_nodes` with an empty `title` returns every node in a graph, and
-`delete_node` works without a successful compile. Delete first, then write.
+The tool writes the graph first, then compiles the whole Blueprint and raises with the errors of
+every graph in it. So if another graph in the Blueprint is broken, or this graph still holds
+broken events your code does not mention (the tool leaves those alone), the call fails after the
+new graph is already written. It reads as "nothing changed".
+
+**Workaround.** After an error, re-read with `read_graph_dsl` before retrying. To clear broken
+nodes, `find_nodes` with an empty `title` returns every node in a graph, and `delete_node` works
+without a successful compile.
 
 ### The graph DSL reader and writer are not symmetric
 
-**Kind:** defect · **Hit on:** 5.8.0 · **Workaround:** partial
+**Kind:** defect · **Hit on:** 5.8.2 · **Workaround:** partial
 
 `read_graph_dsl` emits node names the writer cannot construct. Reading a getter for a public bool
 member produced `|GetbIsHostile`; feeding that straight back gives `The node could not be created`.
@@ -1192,7 +1435,7 @@ where it ended up.
 
 ### Component template properties are lost when the Blueprint compiles
 
-**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
 Add a component to a Blueprint from script, set properties on its `<Name>_GEN_VARIABLE` template,
 then compile, and the values are gone. No warning; the template simply looks as if nothing was
@@ -1203,7 +1446,7 @@ ever set on it.
 
 ### A placed instance remembers an empty override of a newly added component
 
-**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
 When a component is added to a Blueprint, actors already placed in a level pick it up. But an
 instance that got reconstructed while the template was still empty records `None` as its own
@@ -1215,10 +1458,12 @@ template value - or set the value directly on the instance.
 
 ### The batching sandbox cannot run editor Python, and nothing else can either
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** limitation · **Hit on:** 5.8.2 · **Workaround:** yes
 
 The batching toolset runs a sandboxed interpreter: `json`, `math`, `datetime`, `copy`, `re`,
-`time`, and the tool-calling function. No `unreal`, no `os`, no file access. And there is no tool
+`time`, and the tool-calling function. No `unreal`, no `os`. `open()` is swapped for a read-only
+version: modes `r`/`rb`/`rt`, paths inside the project folder or its `Saved` folder only, no
+writing (5.8.3, `programmatic.py`; re-tested live: a project log and the `.uproject` were read). And there is no tool
 anywhere in the catalogue for running a Python file or a console command in the editor, so an
 editor script cannot be launched through this API at all.
 
@@ -1226,21 +1471,25 @@ editor script cannot be launched through this API at all.
 input switched from `Cmd` to `Python` - or it runs headless as a commandlet:
 `UnrealEditor-Cmd.exe <uproject> -run=pythonscript -script=<file>`.
 
-### Localisation keys cannot be set on FText from editor Python
+### Localisation keys on FText from editor Python: use `unreal.NSLOCTEXT`
 
-**Kind:** limitation · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
-`unreal.Text.as_localizable` does not exist; `hasattr` on it returns `False`. Any text an import
-script writes into an asset is culture-invariant, and nothing shows it: the getter returns the
-display string either way, so the assets look correct while carrying no keys at all.
+> **Correction (source-checked, 5.8.3).** An earlier version of this note was titled
+> "Localisation keys cannot be set on FText from editor Python" and suggested a C++ helper.
 
-**Workaround.** A one-function `UBlueprintFunctionLibrary` over `FText::AsLocalizable_Advanced`,
-called from the import script. Worth checking with `hasattr` before assuming any Python-side text
-helper exists - several documented ones do not.
+`unreal.Text.as_localizable` does not exist; `hasattr` on it returns `False`. But
+`unreal.NSLOCTEXT(namespace, key, source)` does exist and calls `FText::AsLocalizable_Advanced`.
+Text written without it carries no keys, and the getter returns the display string either way, so
+the assets look correct. Do not check with `Text.is_culture_invariant()`: in 5.8.3 it is wired to
+`IsEmptyOrWhitespace`.
+
+**Workaround.** Build the text with `unreal.NSLOCTEXT` in the import script, and check the keys
+with `KismetTextLibrary.get_text_id`.
 
 ### `UPanelSlot* Slot` shadows a member and fails the build
 
-**Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
+**Kind:** note · **Hit on:** 5.8.2 · **Workaround:** yes
 
 Not an API problem, but it costs a build cycle: `UWidget` has a member named `Slot`, so a local
 named `Slot` inside a `UUserWidget` method raises C4458, which the default project settings treat
