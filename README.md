@@ -12,7 +12,23 @@ What stops you is a failed call that wipes the two properties it was asked to se
 that replaces an existing asset without asking. A script error that takes the whole editor
 down, because the asset it touched happened to be open in its own window.
 
-**→ [The register](REGISTRY.md)**
+## The register
+
+One file per toolset or area. Every entry: symptom in the heading, condition that triggers it,
+workaround if there is one.
+
+- [Arguments, names and paths](registry/arguments-names-and-paths.md): argument names that differ between toolsets, silent filtering in `find_*`, World Partition cells, asset paths during PIE.
+- [EditorAppToolset](registry/editor-app-toolset.md): viewport capture and its camera keys, optional arguments that are required, the missing console command, GPU profiling.
+- [ObjectTools](registry/object-tools.md): partial writes from a failed `set_properties`, listeners that do not rebuild, CDO delta serialization, arrays.
+- [ProgrammaticToolset](registry/programmatic-toolset.md): the batching sandbox, scripts that crash the editor or roll back, `"None"` references, `_StrictDict`.
+- [SequencerTools](registry/sequencer.md): cameras and cuts, section ranges and eases, play rates, Control Rig, sampling a path frame by frame, leaving a cutscene cleanly.
+- [Niagara](registry/niagara.md): particle data export that delivers nothing in an editor world.
+- [PCGToolset](registry/pcg.md): the toolset's real name, node data views that hang the editor, adding and updating nodes, subgraphs, pin conversions.
+- [MaterialTools](registry/material-tools.md): expression inputs, graph layout, named reroutes, Material Functions that disconnect callers or crash the editor.
+- [Animation and meshes](registry/animation-and-meshes.md): pointing AnimBlueprints and BlendSpaces at another skeleton, blend space axes, mesh sockets versus skeleton sockets.
+- [PhysicsAssetToolset](registry/physics-asset-toolset.md): constraint reference frames, constraint motions, self-collision after `CreateFromMesh`.
+- [Plugins, search and odds](registry/plugins-search-and-odds.md): plugin toggles that do not persist, semantic search, focus throttling, localised packages in the editor.
+- [Blueprint graphs and editor Python](registry/blueprint-graphs-and-editor-python.md): the graph DSL, component templates, properties editor Python cannot see, FText keys, play rates in Python.
 
 ## How to read an entry
 
