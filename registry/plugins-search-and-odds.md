@@ -93,3 +93,23 @@ an editor subsystem that does not exist without the editor.
 **Workaround.** Cook. For checks in PIE, a throwaway copy of the sequence whose sections point at
 the localised assets directly. Text localisation is not affected: the game-language preview works in
 PIE.
+
+### `CompileLiveCoding` refuses instead of starting Live Coding
+
+**Kind:** limitation · **Hit on:** 5.8.3 · **Workaround:** yes
+
+With Live Coding disabled in Editor Preferences (the 5.8 default: `bEnabled=False` in
+`BaseEditorPerProjectUserSettings.ini`), the tool returns
+`Error: Live Coding is not enabled for this session` and compiles nothing. The log has no
+`LogLiveCoding` lines at all.
+
+The toolset checks `IsEnabledForSession()` before it calls `ILiveCodingModule::Compile`, although
+`Compile` itself would start the session first (`EnableForSession(true)`). So an agent cannot turn
+Live Coding on through this tool. By the code, `Startup = Manual` refuses the same way until Live
+Coding is started by hand (not checked live).
+
+**Workaround.** Editor Preferences → General → Live Coding → Enable Live Coding, with Startup left
+on an automatic mode. After that an idle call returns `Result: NoChanges`, and an edit to a
+function body in a `.cpp` returns `Result: Success` in about a second of linking. While Live
+Coding is on, `Build.bat` against the running editor fails with "Unable to build while Live
+Coding is active", so full builds need the editor closed.

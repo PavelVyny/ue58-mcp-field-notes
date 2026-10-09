@@ -27,7 +27,7 @@ workaround if there is one.
 - [MaterialTools](registry/material-tools.md): expression inputs, graph layout, named reroutes, Material Functions that disconnect callers or crash the editor.
 - [Animation and meshes](registry/animation-and-meshes.md): pointing AnimBlueprints and BlendSpaces at another skeleton, blend space axes, mesh sockets versus skeleton sockets.
 - [PhysicsAssetToolset](registry/physics-asset-toolset.md): constraint reference frames, constraint motions, self-collision after `CreateFromMesh`.
-- [Plugins, search and odds](registry/plugins-search-and-odds.md): plugin toggles that do not persist, semantic search, focus throttling, localised packages in the editor.
+- [Plugins, search and odds](registry/plugins-search-and-odds.md): plugin toggles that do not persist, semantic search, focus throttling, localised packages in the editor, Live Coding from an agent.
 - [Blueprint graphs and editor Python](registry/blueprint-graphs-and-editor-python.md): the graph DSL, component templates, properties editor Python cannot see, FText keys, play rates in Python.
 
 ## How to read an entry
