@@ -113,3 +113,18 @@ on an automatic mode. After that an idle call returns `Result: NoChanges`, and a
 function body in a `.cpp` returns `Result: Success` in about a second of linking. While Live
 Coding is on, `Build.bat` against the running editor fails with "Unable to build while Live
 Coding is active", so full builds need the editor closed.
+
+### There is no tool to create a Sound Attenuation asset; duplicate one
+
+**Kind:** limitation · **Hit on:** 5.8.3 · **Workaround:** yes
+
+None of the native toolsets creates an asset of an arbitrary class, so a new `SoundAttenuation`
+cannot be made from scratch.
+
+**Workaround.** `AssetTools.duplicate` any existing attenuation asset to the new path, read the
+whole struct with `ObjectTools.get_properties {properties: ["Attenuation"]}`, change the fields in
+that dictionary (`attenuationShapeExtents.x` is the full-volume radius, `falloffDistance` the length
+of the falloff, plus `distanceAlgorithm`, `nonSpatializedRadiusStart`/`End`, `bAttenuateWithLPF`,
+`bEnableReverbSend`), write it back with `set_properties` as one struct, and read it again to
+confirm. Assign it to a sound with `set_properties {AttenuationSettings}` on the SoundWave, or to a
+Sequencer audio section with `bOverrideAttenuation` and `attenuationSettings`.

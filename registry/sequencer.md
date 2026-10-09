@@ -347,3 +347,41 @@ a static cinematic camera mixed with a gameplay camera that is already moving re
 the last cinematic camera converge on the gameplay camera itself (same FOV, same boom pose) before
 the blend ends, and give the pawn the camera's yaw on the last frame, or the pawn turns towards
 the control rotation when input comes back.
+
+### Some Sequencer tools read the open sequence, not the argument, and an empty answer looks like a possessable
+
+**Kind:** defect · **Hit on:** 5.8.3 · **Workaround:** yes
+
+`get_bound_objects`, `get_custom_binding_type`, `get_custom_binding_objects`,
+`get_custom_bindings_of_type` and `get_section_to_key` work on the sequence that is open in
+Sequencer. With nothing open they return `[]`, `''` or `'None'` without an error.
+`get_custom_binding_type` ignores the `sequence` inside the binding proxy you pass.
+
+The empty answer is easy to misread. For a spawnable camera, `get_custom_binding_type` on a
+closed sequence returned `''`, which is also what a plain possessable returns, so the cameras
+looked like level actors. After opening the sequence, `get_bound_objects` gave paths into
+the map's `PersistentLevel` with a `_0` suffix, which point the same way, but that object is
+the spawned instance. `ObjectTools.set_properties` on it ended up in the sequence's spawnable
+template: the sequence asset changed on save, the map did not.
+
+**Workaround.** `open_sequence` first, then ask. Treat `''` from a closed sequence as "no
+answer", not as "possessable". To check where an edit landed, see which package is dirty after
+the change.
+
+### A visibility track's channel has no name, and its value means "visible", not `bHidden`
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+Built through MCP, an actor visibility track is `add_track_to_binding` with
+`/Script/MovieSceneTracks.MovieSceneVisibilityTrack`, then `set_property_name_and_path` with
+`property_path: "bHidden"`. Two things are not what you would guess.
+
+`get_channel_names` on its section returns `["None"]`. That string is the name to pass:
+`add_key_bool {channel_name: "None"}` writes the key and `get_keys` with the same name reads it back.
+
+The track is bound to `bHidden`, but the channel stores the opposite: `true` is visible, `false` is
+hidden. The engine inverts the value when keying from the editor (`MovieSceneVisibilityTrack.cpp`,
+`ProcessSourceValueForKeying`). A script that keys `true` to hide an actor leaves it on screen.
+
+**Workaround.** Key `false` where the actor should disappear. To keep it hidden after the
+sequence ends, set the section to `KeepState` with `set_section_completion_mode`.

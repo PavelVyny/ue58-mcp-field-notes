@@ -185,3 +185,17 @@ the editor. Budget for that when planning an agent-driven FX pass.
 
 A candidate, not yet tried on particles or rig poses: `EditorAppToolset.CaptureEditorImage`
 captures the whole editor window, viewport included, as the human sees it (re-tested on 5.8.3).
+
+### Setting the PIE window size without the preferences UI
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** n/a
+
+The size of the "New Editor Window (PIE)" window lives in the Level Editor play settings, and
+`ConfigSettingsToolset` reaches it:
+
+`SetSectionProperties {containerName: "Editor", categoryName: "LevelEditor", sectionName: "PlayIn",
+propertiesJson: "{\"NewWindowWidth\":1920,\"NewWindowHeight\":1080}"}`
+
+It saves immediately. Useful for checking UI at a fixed aspect ratio on a monitor whose own
+shape would hide the problem. `GetSectionPropertyValues` cannot read `LastExecutedPlayModeType`
+in the same section and fails the whole call if you ask for it.
