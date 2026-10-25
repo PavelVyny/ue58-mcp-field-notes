@@ -128,3 +128,18 @@ of the falloff, plus `distanceAlgorithm`, `nonSpatializedRadiusStart`/`End`, `bA
 `bEnableReverbSend`), write it back with `set_properties` as one struct, and read it again to
 confirm. Assign it to a sound with `set_properties {AttenuationSettings}` on the SoundWave, or to a
 Sequencer audio section with `bOverrideAttenuation` and `attenuationSettings`.
+
+### Non-ASCII arguments arrive garbled through a Python stdio bridge on Windows
+
+**Kind:** note · **Hit on:** 5.8.3 · **Workaround:** yes
+
+If your client reaches the editor's MCP server through a Python stdio-to-HTTP bridge,
+Cyrillic (or any non-ASCII) text in tool arguments can land in the editor as mojibake:
+`set_properties` writes `Р“РѕР±…` into an `FText` and still returns true. Reading is fine,
+and escaping the text as `\uXXXX` in the argument does not help. The editor is not at fault:
+on Windows, Python decodes a piped stdin with the system locale (cp1251 in our case), not UTF-8,
+so the bridge garbles the request before it reaches the editor.
+
+**Workaround.** Run the bridge in UTF-8 mode: add `"PYTHONUTF8": "1"` to the server's `env`
+in the client's MCP config and reconnect. Without it, build strings inside a
+ProgrammaticToolset script from code points (`chr(0x413)`), so only ASCII crosses the pipe.
