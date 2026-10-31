@@ -33,6 +33,30 @@ limit itself**. With `Swing1 Limited 65`, a yaw around 60 puts the straight leg 
 of the bend window, and the joint folds one way only. If you have a tuned donor asset, copy
 its Rotation values directly - unlike Position, they do not depend on the mesh proportions.
 
+### `SetConstraintLimits` looks applied, but the old limits are what gets saved
+
+**Kind:** defect · **Hit on:** 5.8.3 · **Workaround:** yes
+
+Set limits with `SetConstraintLimits`, check them with `GetConstraints`, watch them work in
+Simulate, save the asset. Restart the editor and the joints are back to their previous limits.
+Mass scales written by the same script survive; the limits do not. Reproduced once, on one
+asset, by restarting the editor.
+
+Why, from the engine source: the tool writes the template's `DefaultInstance` through
+`SetAngular*Limit` and sends no `PostEditChange`. On save, `UPhysicsConstraintTemplate::Serialize`
+(`PhysicsConstraintTemplate.cpp`) swaps `DefaultInstance.ProfileInstance` for a cached copy,
+`DefaultProfile`, and that copy is only refreshed by `UpdateProfileInstance` from
+`PostEditChangeProperty`. So the live editor shows your numbers and the file gets the old ones.
+
+**Workaround.** Write the limits through the constraint template instead. `ObjectTools.get_properties`
+on `<PhysicsAsset>:PhysicsConstraintTemplate_N` with `["DefaultInstance"]` returns the whole
+struct; change `profileInstance.coneLimit` / `profileInstance.twistLimit` in it (motions are
+`ACM_Limited` / `ACM_Locked` / `ACM_Free`) and send the struct back with `set_properties`
+(`{"DefaultInstance": {...}}`). `set_properties` does fire `PostEditChange`, so the cached profile
+is updated. Read-back matches; a restart after this path was not tested yet. Template suffixes are
+not contiguous (a deleted constraint leaves a gap), and a missing one aborts an
+`execute_tool_script` run even inside `try`, so probe them in small batches.
+
 ### Do not compare constraint motions by their first letter
 
 **Kind:** note · **Hit on:** 5.8.0 · **Workaround:** yes
